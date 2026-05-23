@@ -1,0 +1,56 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "ignoreDeprecations": "6.0",
+    "rootDir": ".",
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@opennotation/model": [
+        "./src/core/model/index.ts"
+      ],
+      "@opennotation/temporal": [
+        "./src/core/temporal/index.ts"
+      ],
+      "@opennotation/engraving": [
+        "./src/core/engraving/index.ts"
+      ],
+      "@opennotation/rendering": [
+        "./src/core/rendering/index.ts"
+      ],
+      "@opennotation/editor": [
+        "./src/core/editor/index.ts"
+      ],
+      "@opennotation/playback": [
+        "./src/core/playback/index.ts"
+      ],
+      "@opennotation/fonts": [
+        "./src/core/fonts/index.ts"
+      ],
+      "@opennotation/serial": [
+        "./src/core/serialization/index.ts"
+      ]
+    },
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "types": [
+      "node",
+      "vitest/globals"
+    ]
+  },
+  "include": [
+    "src",
+    "tests",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "eslint.config.js"
+  ]
+}

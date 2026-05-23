@@ -1,0 +1,10 @@
+export * from "./core/model/index.js";
+export * from "./core/temporal/index.js";
+export * from "./core/engraving/index.js";
+export * from "./core/rendering/index.js";
+export * from "./core/editor/index.js";
+export * from "./core/playback/index.js";
+export { fontsModule } from "./core/fonts/index.js";
+export * from "./core/serialization/index.js";
+export * from "./platform/web/index.js";
+export * from "./bindings/react/index.js";

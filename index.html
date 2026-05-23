@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenNotation — Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #1a1a1a;
+      font-family: "Georgia", serif;
+      color: #e8e4dc;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px;
+      gap: 24px;
+    }
+
+    header {
+      text-align: center;
+    }
+
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: normal;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #c8bfa8;
+    }
+
+    header p {
+      font-size: 0.78rem;
+      letter-spacing: 0.1em;
+      color: #6b6660;
+      margin-top: 6px;
+    }
+
+    #canvas-wrapper {
+      background: #ffffff;
+      border-radius: 2px;
+      box-shadow: 0 8px 48px rgba(0,0,0,0.6);
+      overflow: hidden;
+      line-height: 0;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    #controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    label {
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      color: #8a8480;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    input[type="range"] {
+      accent-color: #c8bfa8;
+      width: 100px;
+    }
+
+    #status {
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      color: #4a4640;
+      min-height: 1.2em;
+    }
+
+    #hit-info {
+      font-size: 0.72rem;
+      color: #8a8480;
+      letter-spacing: 0.06em;
+      min-height: 1.2em;
+      font-family: "Courier New", monospace;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>OpenNotation</h1>
+    <p>Phase 5 — Canvas2D Renderer</p>
+  </header>
+
+  <div id="canvas-wrapper">
+    <canvas id="score-canvas" width="900" height="320"></canvas>
+  </div>
+
+  <div id="controls">
+    <label>
+      Zoom
+      <input type="range" id="zoom" min="0.5" max="2.5" step="0.05" value="1.0" />
+    </label>
+    <label>
+      Scroll
+      <input type="range" id="scroll" min="0" max="200" step="1" value="0" />
+    </label>
+  </div>
+
+  <div id="hit-info">Click a note to inspect it</div>
+  <div id="status">Loading font…</div>
+
+  <script type="module" src="/main.ts"></script>
+</body>
+</html>
