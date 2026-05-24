@@ -1,5 +1,5 @@
-export * from "./IRenderer.js";
-export * from "./canvas2d/Canvas2DRenderer.js";
+export * from "./IRenderer.ts";
+export * from "./canvas2d/Canvas2DRenderer.ts";
 
 export const renderingModule = {
   name: "@opennotation/rendering"

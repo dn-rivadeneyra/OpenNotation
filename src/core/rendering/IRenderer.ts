@@ -2,7 +2,7 @@ import type {
   BoundingBox,
   EngravingElement,
   EngravingResult
-} from "../engraving/index.js";
+} from "../engraving/index.ts";
 
 export type FontAdapterLike = {
   readonly fontFamily: string;

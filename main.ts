@@ -70,10 +70,6 @@ function buildDemoScore() {
     return id;
   };
 
-  addMeasure(1920, 2);
-  addMeasure(3840, 3);
-  addMeasure(5760, 4);
-
   const key = `${staffId}:1`;
   const existingIndex = score.eventIndex.get(key) ?? [];
 

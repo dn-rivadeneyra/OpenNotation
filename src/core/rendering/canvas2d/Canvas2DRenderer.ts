@@ -83,6 +83,8 @@ export class Canvas2DRenderer implements IRenderer {
   private lastResult: EngravingResult | null = null;
   private lastViewport: Viewport | null = null;
 
+  
+
   private readonly elementMap = new Map<string, HitElementRecord>();
   private highlights = new Set<string>();
 
@@ -98,6 +100,7 @@ export class Canvas2DRenderer implements IRenderer {
 
   render(result: EngravingResult, viewport: Viewport): void {
     if (!this.ctx) throw new Error("Renderer not initialized.");
+    
 
     this.lastResult = result;
     this.lastViewport = viewport;
@@ -109,6 +112,7 @@ export class Canvas2DRenderer implements IRenderer {
     for (const page of result.pages) {
       this.renderPage(page, viewport);
     }
+    
   }
 
   renderPages(pageIndices: number[], result: EngravingResult, viewport: Viewport): void {
@@ -285,14 +289,14 @@ export class Canvas2DRenderer implements IRenderer {
       bottom: screenY + raw.bottom * scale
     };
   
-    // DEBUG VISUAL (keep for now)
-    this.ctx!.strokeStyle = "red";
+    // DEBUG VISUAL 
+    /*this.ctx!.strokeStyle = "red";
     this.ctx!.strokeRect(
       bbox.left,
       bbox.top,
       bbox.right - bbox.left,
       bbox.bottom - bbox.top
-    );
+    );*/
   
     this.elementMap.set(element.id, {
       element,
@@ -413,6 +417,7 @@ export class Canvas2DRenderer implements IRenderer {
     this.ctx.strokeStyle = "#000";
 
     for (let i = 0; i < line.lineCount; i++) {
+      //Positions notes in the staff
       const yUnits = line.y + systemY + i;
 
       const y = pageOriginY + toPxY(yUnits, viewport);

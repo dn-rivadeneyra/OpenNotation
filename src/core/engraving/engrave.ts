@@ -24,7 +24,7 @@ import {
 } from "./collision/skyline.ts";
 
 import type {
-  BoundingBox,
+  bboxBox,
   EngravingElement,
   EngravingMeasure,
   EngravingResult,
@@ -250,12 +250,12 @@ function eventElementsForMeasure(
 
         x,
         y: noteY,
-
+        //Hitbox for notehead
         bbox: {
-          left: -0.5,
-          top: -0.32,
-          right: 0.5,
-          bottom: 0.32
+          left: 0,
+          top: -0.45,
+          right: 1.45,
+          bottom: 0.45
         },
 
         glyph: {
@@ -265,7 +265,6 @@ function eventElementsForMeasure(
             )
         }
       });
-
       // --------------------------------------------
       // STEM
       // --------------------------------------------
@@ -295,8 +294,8 @@ function eventElementsForMeasure(
         const anchor =
           stem.direction === "up"
             ? {
-                x: anchors.stemUpSE[0] / 1.38,
-                y: -anchors.stemUpSE[1]
+                x: anchors.stemUpSE[0] / 1.10, //Magic number to be changed later
+                y: -anchors.stemUpSE[1] - 0.068
               }
             : {
                 x: anchors.stemDownNW[0] + 0.068,
@@ -312,9 +311,9 @@ function eventElementsForMeasure(
           y: noteY + anchor.y,
 
           bbox: {
-            left: -0.06,
+            left: -0.075,
             right: 0.06,
-            top: stem.direction === "up" ? -stemLength : 0,
+            top: stem.direction === "up" ? -stemLength : 0 + 0.075,
             bottom: stem.direction === "up" ? 0 : stemLength
           },
 
@@ -327,13 +326,14 @@ function eventElementsForMeasure(
             }
           ]
         });
-        console.log(
+        /*console.log(
           event.pitch.step + event.pitch.octave,
           "dir:", stem.direction,
           "noteY:", noteY,
           "anchor:", JSON.stringify(anchor),
           "stemY:", noteY + anchor.y
-        );
+        );*/
+
       }
     }
 
@@ -373,6 +373,35 @@ function eventElementsForMeasure(
           right: 0.06,
           bottom: 4.0
         }
+      });
+    }
+    else if (event.kind === "clef") {
+      const clefGlyphs: Record<string, number> = {
+        treble: 0xe050,
+        bass: 0xe062,
+        alto: 0xe05c,
+        tenor: 0xe05c,
+        treble8vb: 0xe052,
+        bass8vb: 0xe062,
+        percussion: 0xe069,
+      };
+      const clefY: Record<string, number> = {
+        treble: 2.5,    // G line = staff position 2 → y = (4-2)*0.5 = 1.0
+        bass: 0.5,      // F line = staff position 3 → y = (4-3)*0.5 = 0.5
+        alto: 1.0,      // C line = staff position 2
+        tenor: 0.5,     // C line = staff position 3
+        treble8vb: 1.0,
+        bass8vb: 0.5,
+        percussion: 1.0,
+      };
+      elements.push({
+        id: `el-clef-${event.id}`,
+        sourceId: event.id,
+        type: "clef",
+        x: 0,
+        y: clefY[event.clef] ?? 1.0,
+        bbox: { left: 0, top: -1.5, right: 1.5, bottom: 2.0 },
+        glyph: { codepoint: clefGlyphs[event.clef] ?? 0xe050 }
       });
     }
   }
