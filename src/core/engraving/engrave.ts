@@ -133,10 +133,6 @@ const CONFIG = {
 };
 // ============================================================================
 
-// Staff positions are 0-based from the bottom line.
-// Renderer coordinates are top-origin:
-//   smaller Y = visually higher
-//   larger Y = visually lower
 function staffPositionToY(staffPosition: number): number {
   return (4 - staffPosition) * 0.5;
 }
@@ -149,12 +145,12 @@ function noteheadCodepoint(type: string): number {
 
 function restCodepoint(type: string): number {
   switch (type) {
-    case "whole": return 0xe4e3; // restWhole
-    case "half": return 0xe4e4;  // restHalf
+    case "whole": return 0xe4e3; 
+    case "half": return 0xe4e4;  
     case "eighth": 
-    case "eight": return 0xe4e6; // rest8th
+    case "eight": return 0xe4e6; 
     case "quarter":
-    default: return 0xe4e5;      // restQuarter
+    default: return 0xe4e5;      
   }
 }
 
@@ -167,10 +163,7 @@ function computePreambleWidth(score: Score, measure: Measure): number {
   
   let width = 0;
   if (preambleEvents.some((e) => e.kind === "clef")) width += CONFIG.PREAMBLE_CLEF_WIDTH;
-  
-  // Dynamic keysig width based on accidentals can be optimized later; flat padding for now
   if (preambleEvents.some((e) => e.kind === "keysig")) width += CONFIG.PREAMBLE_KEYSIG_WIDTH;
-  
   if (preambleEvents.some((e) => e.kind === "timesig")) width += CONFIG.PREAMBLE_TIMESIG_WIDTH;
   
   return width;
@@ -250,7 +243,8 @@ function baseMeasureWidth(score: Score, measure: Measure): number {
 function eventElementsForMeasure(
   score: Score,
   measure: Measure,
-  fonts: FontMetrics
+  fonts: FontMetrics,
+  stretchRatio: number = 1.0 // Inject stretch factor so relative anchors remain rigid
 ): EngravingElement[] {
   const preambleWidth = computePreambleWidth(score, measure);
   const tickXMap = buildTickXMap(score, measure);
@@ -277,9 +271,10 @@ function eventElementsForMeasure(
   const elements: EngravingElement[] = [];
 
   for (const event of events) {
-    const x = (tickXMap.get(event.tick) ?? (event.tick - measure.tick) / CONFIG.TICKS_PER_QUARTER) + preambleWidth;
+    // Only stretch the flexible musical spacing, not the fixed preamble
+    const rawSpringX = tickXMap.get(event.tick) ?? (event.tick - measure.tick) / CONFIG.TICKS_PER_QUARTER;
+    const x = preambleWidth + (rawSpringX * stretchRatio);
     
-    // --- MULTI-STAFF Y-OFFSET CALCULATION ---
     const staffIndex = score.staves.findIndex(s => s.id === event.staffId);
     const staffOffsetY = staffIndex > 0 ? staffIndex * CONFIG.SYSTEM_HEIGHT_SPACING : 0;
 
@@ -317,7 +312,7 @@ function eventElementsForMeasure(
           id: `el-acc-${event.id}`,
           sourceId: event.id,
           type: "accidental",
-          x: x - 1.25, // offset left of notehead
+          x: x - 1.25, // Fixed anchor, immune to stretch distortion
           y: noteY,
           bbox: { ...CONFIG.BBOX_ACCIDENTAL },
           glyph: { codepoint: accidentalGlyphs[event.accidental] ?? 0xe261 }
@@ -350,7 +345,7 @@ function eventElementsForMeasure(
           id: `el-stem-${event.id}`,
           sourceId: event.id,
           type: "stem",
-          x: x + anchor.x,
+          x: x + anchor.x, // Fixed anchor relative to stretched note
           y: noteY + anchor.y,
           bbox: {
             left: CONFIG.STEM_BBOX_LEFT,
@@ -420,10 +415,9 @@ function eventElementsForMeasure(
     }
 
     // ------------------------------------------------
-    // KEY SIGNATURE (Armadura)
+    // KEY SIGNATURE
     // ------------------------------------------------
     else if (event.kind === "keysig") {
-      // Safely access the number of fifths (positive = sharps, negative = flats)
       const keyObj = event["key" as keyof typeof event] as any;
       const fifths = keyObj?.fifths ?? 0;
       const isSharp = fifths > 0;
@@ -432,9 +426,8 @@ function eventElementsForMeasure(
       const SMUFL_SHARP = 0xE262;
       const SMUFL_FLAT = 0xE260;
       
-      // Standard treble clef vertical offsets for accidentals
-      const sharpY = [0.5, 2.0, -0.5, 1.0, 2.5, 0.0, 1.5]; // F, C, G, D, A, E, B
-      const flatY = [2.0, 0.5, 2.5, 1.0, 3.0, 1.5, 3.5];   // B, E, A, D, G, C, F
+      const sharpY = [0.5, 2.0, -0.5, 1.0, 2.5, 0.0, 1.5];
+      const flatY = [2.0, 0.5, 2.5, 1.0, 3.0, 1.5, 3.5];
 
       for (let i = 0; i < count && i < 7; i++) {
         const yOffset = isSharp ? sharpY[i] : flatY[i];
@@ -444,7 +437,6 @@ function eventElementsForMeasure(
           id: `el-keysig-${event.id}-${i}`,
           sourceId: event.id,
           type: "keysig",
-          // Stagger them horizontally based on their index
           x: preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH - CONFIG.PREAMBLE_KEYSIG_WIDTH + (i * 0.8),
           y: (yOffset ?? 1.0) + staffOffsetY,
           bbox: { ...CONFIG.BBOX_KEYSIG },
@@ -454,7 +446,7 @@ function eventElementsForMeasure(
     }
 
     // ------------------------------------------------
-    // TIME SIGNATURE (COMPÁS)
+    // TIME SIGNATURE
     // ------------------------------------------------
     else if (event.kind === "timesig") {
       const digitGlyphs: Record<number, number> = {
@@ -485,10 +477,11 @@ function eventElementsForMeasure(
         glyph: { codepoint: digitGlyphs[num] ?? 0xe084 }
       });
 
+      // Fixed: Type was mistakenly set to "clef" instead of "timesig"
       elements.push({
         id: `el-timesig-den-${event.id}`,
         sourceId: event.id,
-        type: "clef",
+        type: "timesig",
         x: preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH,
         y: CONFIG.Y_TIMESIG_DENOMINATOR + staffOffsetY,
         bbox: { ...CONFIG.BBOX_TIMESIG },
@@ -633,19 +626,19 @@ export function engrave(
     for (const measure of measureModels) {
       const naturalWidth = widths.get(measure.id) ?? CONFIG.DEFAULT_MEASURE_WIDTH;
       const measureWidth = naturalWidth * systemLayout.stretchFactor;
-      const rawElements = eventElementsForMeasure(score, measure, fonts);
+      
+      const preambleWidth = computePreambleWidth(score, measure);
+      
+      // Calculate how much only the flexible space needs to stretch 
+      const springWidth = Math.max(0.1, naturalWidth - preambleWidth - CONFIG.MEASURE_WIDTH_PADDING);
+      const targetSpringWidth = Math.max(0.1, measureWidth - preambleWidth - CONFIG.MEASURE_WIDTH_PADDING);
+      const stretchRatio = targetSpringWidth / springWidth;
 
-      const scaledElements = rawElements.map((el) => {
-        if (el.type === "clef" || el.type === "keysig" || el.type === "timesig") {
-          return el;
-        }
-        return {
-          ...el,
-          x: naturalWidth > 0 ? (el.x / naturalWidth) * measureWidth : el.x
-        };
-      });
+      // Pass the stretch ratio down so elements calculate their true positions immediately.
+      // This prevents scaling from breaking hardcoded anchor relationships.
+      const rawElements = eventElementsForMeasure(score, measure, fonts, stretchRatio);
 
-      const elements = runSkylinePlacement(scaledElements, staffIds);
+      const elements = runSkylinePlacement(rawElements, staffIds);
 
       measures.push({
         measureId: measure.id,
@@ -710,15 +703,13 @@ export function engrave(
       }
     );
 
-    // Inject the computed spanner path directly into the first measure of the first system
-    // so the renderer has access to draw the Bézier curve.
     if (spannerPath && systems[0]?.measures[0]) {
       systems[0].measures[0].spanners.push({
         id: `span-render-${spanner.id}`,
         sourceId: spanner.id,
         type: spanner.kind,
         path: spannerPath,
-        bbox: { left: 0, top: -2, right: (endPos.x - startPos.x), bottom: 2 } // Fallback generic span box
+        bbox: { left: 0, top: -2, right: (endPos.x - startPos.x), bottom: 2 } 
       });
     }
   }
