@@ -290,13 +290,13 @@ export class Canvas2DRenderer implements IRenderer {
     };
   
     // DEBUG VISUAL 
-    /*this.ctx!.strokeStyle = "red";
+    /* this.ctx!.strokeStyle = "red";
     this.ctx!.strokeRect(
       bbox.left,
       bbox.top,
       bbox.right - bbox.left,
       bbox.bottom - bbox.top
-    );*/
+    ); */
   
     this.elementMap.set(element.id, {
       element,

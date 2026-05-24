@@ -33,24 +33,66 @@ import type {
   LayoutParameters
 } from "./types.ts";
 
+// ============================================================================
+// 🎛️ GRAPHICS & INTERACTION CALIBRATION DASHBOARD
+// Edit these constants to fine-tune layout, hitboxes, and spacing.
+// ============================================================================
+
+const CONFIG = {
+  // --- Resolution & Engine ---
+  TICKS_PER_QUARTER: 480,
+  DEFAULT_MEASURE_WIDTH: 6.0,
+  MEASURE_WIDTH_PADDING: 1.0,
+  SYSTEM_HEIGHT_SPACING: 10,
+  STAFF_BOTTOM_Y: 4.0,
+
+  // --- Preamble Spacing Buffer ---
+  PREAMBLE_CLEF_WIDTH: 2.0,
+  PREAMBLE_KEYSIG_WIDTH: 1.5,
+  PREAMBLE_TIMESIG_WIDTH: 2.5,
+
+  // --- Vertical Positions (Y) ---
+  Y_REST_DEFAULT: 1.0,
+  Y_TIMESIG_NUMERATOR: 1.0,
+  Y_TIMESIG_DENOMINATOR: 3.0,
+  Y_CLEFS: {
+    treble: 2.5, bass: 0.5, alto: 1.0, tenor: 0.5,
+    treble8vb: 1.0, bass8vb: 0.5, percussion: 1.0,
+  } as Record<string, number>,
+
+  // --- Interactive Hitboxes (Bounding Boxes) ---
+  BBOX_DEFAULT:  { left: -0.5, top: -0.5, right: 0.5, bottom: 0.5 },
+  BBOX_NOTEHEAD: { left: 0, top: -0.45, right: 1.45, bottom: 0.45 },
+  BBOX_BARLINE:  { left: -0.06, top: 0, right: 0.06, bottom: 4.0 },
+  BBOX_CLEF:     { left: 0, top: -4.0, right: 2.5, bottom: 2.0 },
+  BBOX_KEYSIG:   { left: -0.2, top: -1.0, right: 1.0, bottom: 1.0 },
+  BBOX_TIMESIG:  { left: 0, top: -1.0, right: 1.5, bottom: 1.0 },
+  
+  // --- Stem Math & SMuFL Adjustments ---
+  STEM_LENGTH: 3.5,
+  STEM_BBOX_LEFT: -0.075,
+  STEM_BBOX_RIGHT: 0.06,
+  STEM_BBOX_DOWN_PADDING_TOP: 0.075,
+  STEM_UP_ANCHOR_X_SCALE: 1.10,   
+  STEM_UP_ANCHOR_Y_OFFSET: -0.068,  
+  STEM_DOWN_ANCHOR_X_OFFSET: 0.068, 
+
+  // --- Skyline Collision Padding (width, height, margin) ---
+  SKYLINE_DYNAMICS: { xPad: 0.5, hPad: 0.8, margin: 0.4 },
+  SKYLINE_LYRICS:   { xPad: 0.8, hPad: 0.9, margin: 0.4 },
+  SKYLINE_ARTIC:    { xPad: 0.5, hPad: 0.6, margin: 0.3 },
+  SKYLINE_SLUR_OFFSET: 2.0,
+  SKYLINE_MAX_X_SPAN: 10000,
+};
+
+// ============================================================================
+
 // Staff positions are 0-based from the bottom line.
 // Renderer coordinates are top-origin:
 //   smaller Y = visually higher
 //   larger Y = visually lower
-//
-// staffPosition 4 -> top line
-// staffPosition 0 -> bottom line
 function staffPositionToY(staffPosition: number): number {
   return (4 - staffPosition) * 0.5;
-}
-
-function defaultBBox(): BoundingBox {
-  return {
-    left: -0.5,
-    top: -0.5,
-    right: 0.5,
-    bottom: 0.5
-  };
 }
 
 function noteheadCodepoint(type: string): number {
@@ -58,14 +100,6 @@ function noteheadCodepoint(type: string): number {
   if (type === "half") return 0xe0a3;
   return 0xe0a4;
 }
-
-// ----------------------------------------------------
-// PREAMBLE SPACING (CLEF FIX)
-// ----------------------------------------------------
-
-const CLEF_WIDTH = 2.0;
-const KEYSIG_WIDTH = 1.0;
-const TIMESIG_WIDTH = 1.5;
 
 function computePreambleWidth(score: Score, measure: Measure): number {
   const preambleEvents = [...score.events.values()].filter(
@@ -75,9 +109,12 @@ function computePreambleWidth(score: Score, measure: Measure): number {
   );
   
   let width = 0;
-  if (preambleEvents.some((e) => e.kind === "clef")) width += CLEF_WIDTH;
-  if (preambleEvents.some((e) => e.kind === "keysig")) width += KEYSIG_WIDTH;
-  if (preambleEvents.some((e) => e.kind === "timesig")) width += TIMESIG_WIDTH;
+  if (preambleEvents.some((e) => e.kind === "clef")) width += CONFIG.PREAMBLE_CLEF_WIDTH;
+  
+  // Dynamic keysig width based on accidentals can be optimized later; flat padding for now
+  if (preambleEvents.some((e) => e.kind === "keysig")) width += CONFIG.PREAMBLE_KEYSIG_WIDTH;
+  
+  if (preambleEvents.some((e) => e.kind === "timesig")) width += CONFIG.PREAMBLE_TIMESIG_WIDTH;
   
   return width;
 }
@@ -86,10 +123,7 @@ function computePreambleWidth(score: Score, measure: Measure): number {
 // SPRING SPACING
 // ----------------------------------------------------
 
-function buildTickXMap(
-  score: Score,
-  measure: Measure
-): Map<number, number> {
+function buildTickXMap(score: Score, measure: Measure): Map<number, number> {
   const sliceMap = buildSliceMap(score);
 
   const measureSlices = sliceMap.slices.filter(
@@ -105,35 +139,21 @@ function buildTickXMap(
   }
 
   const naturalWidth = springs.reduce(
-    (sum, s) =>
-      sum +
-      s.minWidth +
-      s.proportionalWidth +
-      s.extraWidth,
+    (sum, s) => sum + s.minWidth + s.proportionalWidth + s.extraWidth,
     0
   );
 
-  const positions = solveSpacing(
-    springs,
-    naturalWidth
-  );
-
+  const positions = solveSpacing(springs, naturalWidth);
   const tickXMap = new Map<number, number>();
 
   for (let i = 0; i < measureSlices.length; i++) {
-    tickXMap.set(
-      measureSlices[i]!.tick,
-      positions[i] ?? 0
-    );
+    tickXMap.set(measureSlices[i]!.tick, positions[i] ?? 0);
   }
 
   return tickXMap;
 }
 
-function baseMeasureWidth(
-  score: Score,
-  measure: Measure
-): number {
+function baseMeasureWidth(score: Score, measure: Measure): number {
   const sliceMap = buildSliceMap(score);
 
   const measureSlices = sliceMap.slices.filter(
@@ -145,32 +165,23 @@ function baseMeasureWidth(
   const springs = buildSprings(measureSlices, score);
 
   if (springs.length === 0) {
-    return 6;
+    return CONFIG.DEFAULT_MEASURE_WIDTH;
   }
 
   const naturalWidth = springs.reduce(
-    (sum, s) =>
-      sum +
-      s.minWidth +
-      s.proportionalWidth +
-      s.extraWidth,
+    (sum, s) => sum + s.minWidth + s.proportionalWidth + s.extraWidth,
     0
   );
 
-  const positions = solveSpacing(
-    springs,
-    naturalWidth
-  );
-
+  const positions = solveSpacing(springs, naturalWidth);
   const lastSpring = springs[springs.length - 1]!;
   
-  // Add the preamble width to the base measure width
   const preambleWidth = computePreambleWidth(score, measure);
 
   return (
     (positions[positions.length - 1] ?? 0) +
     lastSpring.proportionalWidth +
-    1.0 + 
+    CONFIG.MEASURE_WIDTH_PADDING + 
     preambleWidth
   );
 }
@@ -185,11 +196,7 @@ function eventElementsForMeasure(
   fonts: FontMetrics
 ): EngravingElement[] {
   const preambleWidth = computePreambleWidth(score, measure);
-  
-  const tickXMap = buildTickXMap(
-    score,
-    measure
-  );
+  const tickXMap = buildTickXMap(score, measure);
 
   const events = [...score.events.values()]
     .filter(
@@ -197,135 +204,67 @@ function eventElementsForMeasure(
         event.tick >= measure.tick &&
         event.tick < measure.tick + measure.duration
     )
-    .sort(
-      (left, right) =>
-        left.tick - right.tick
-    );
+    .sort((left, right) => left.tick - right.tick);
 
-  // Count active voices per staff/tick for stem direction logic.
-  const voicesPerStaffTick =
-    new Map<string, Set<number>>();
+  const voicesPerStaffTick = new Map<string, Set<number>>();
 
   for (const event of events) {
-    if (
-      event.kind !== "note" &&
-      event.kind !== "rest"
-    ) {
-      continue;
-    }
+    if (event.kind !== "note" && event.kind !== "rest") continue;
 
-    const key =
-      `${event.staffId}:${event.tick}`;
-
-    const voices =
-      voicesPerStaffTick.get(key) ??
-      new Set<number>();
-
+    const key = `${event.staffId}:${event.tick}`;
+    const voices = voicesPerStaffTick.get(key) ?? new Set<number>();
     voices.add(event.voiceId);
-
-    voicesPerStaffTick.set(
-      key,
-      voices
-    );
+    voicesPerStaffTick.set(key, voices);
   }
 
   const elements: EngravingElement[] = [];
 
   for (const event of events) {
-    // X is now offset by the preamble width so notes don't crash into the clef
-    const x =
-      (tickXMap.get(event.tick) ?? (event.tick - measure.tick) / 480) + preambleWidth;
+    const x = (tickXMap.get(event.tick) ?? (event.tick - measure.tick) / CONFIG.TICKS_PER_QUARTER) + preambleWidth;
+    
+    // --- MULTI-STAFF Y-OFFSET CALCULATION ---
+    const staffIndex = score.staves.findIndex(s => s.id === event.staffId);
+    const staffOffsetY = staffIndex > 0 ? staffIndex * CONFIG.SYSTEM_HEIGHT_SPACING : 0;
 
     // ------------------------------------------------
     // NOTE
     // ------------------------------------------------
-
     if (event.kind === "note") {
-      const clef = getActiveClef(
-        score,
-        event.staffId,
-        event.tick
-      );
-
-      const staffPos =
-        pitchToStaffPosition(
-          event.pitch,
-          clef
-        );
-
-      const noteY =
-        staffPositionToY(staffPos);
-
-      const voiceCount =
-        voicesPerStaffTick.get(
-          `${event.staffId}:${event.tick}`
-        )?.size ?? 1;
-
-      const stem = resolveStem(
-        event.id,
-        staffPos,
-        voiceCount,
-        event.voiceId
-      );
-
-      // --------------------------------------------
-      // NOTEHEAD
-      // --------------------------------------------
+      const clef = getActiveClef(score, event.staffId, event.tick);
+      const staffPos = pitchToStaffPosition(event.pitch, clef);
+      const noteY = staffPositionToY(staffPos) + staffOffsetY;
+      const voiceCount = voicesPerStaffTick.get(`${event.staffId}:${event.tick}`)?.size ?? 1;
+      const stem = resolveStem(event.id, staffPos, voiceCount, event.voiceId);
 
       elements.push({
         id: `el-note-${event.id}`,
         sourceId: event.id,
         type: "notehead",
-
         x,
         y: noteY,
-        //Hitbox for notehead
-        bbox: {
-          left: 0,
-          top: -0.45,
-          right: 1.45,
-          bottom: 0.45
-        },
-
-        glyph: {
-          codepoint:
-            noteheadCodepoint(
-              event.duration.type
-            )
-        }
+        bbox: { ...CONFIG.BBOX_NOTEHEAD },
+        glyph: { codepoint: noteheadCodepoint(event.duration.type) }
       });
+      
       // --------------------------------------------
-      // STEM (Restored from your original code)
+      // STEM
       // --------------------------------------------
-
       if (event.duration.type !== "whole") {
-        const noteheadName =
-          event.duration.type === "half"
-            ? "noteheadHalf"
-            : "noteheadBlack";
-
-        const anchors =
-          fonts.metadata?.glyphsWithAnchors?.[noteheadName];
+        const noteheadName = event.duration.type === "half" ? "noteheadHalf" : "noteheadBlack";
+        const anchors = fonts.metadata?.glyphsWithAnchors?.[noteheadName];
 
         if (!anchors) {
-          throw new Error(
-            `Missing SMuFL anchors for ${noteheadName}`
-          );
+          throw new Error(`Missing SMuFL anchors for ${noteheadName}`);
         }
 
-        const stemLength = 3.5;
-
-        // SMuFL stemUpSE = right edge of notehead (use for up stems)
-        // SMuFL stemDownNW = left edge of notehead (use for down stems)
-        // SMuFL Y is upward-positive; renderer Y is downward-positive → negate Y
         const anchor =
           stem.direction === "up"
             ? {
-                x: anchors.stemUpSE[0] / 1.10, //Magic number to be changed later
-                y: -anchors.stemUpSE[1] - 0.068
+                x: anchors.stemUpSE[0] / CONFIG.STEM_UP_ANCHOR_X_SCALE,
+                y: -anchors.stemUpSE[1] + CONFIG.STEM_UP_ANCHOR_Y_OFFSET
               }
             : {
-                x: anchors.stemDownNW[0] + 0.068,
+                x: anchors.stemDownNW[0] + CONFIG.STEM_DOWN_ANCHOR_X_OFFSET,
                 y: -anchors.stemDownNW[1] 
               };
 
@@ -333,23 +272,20 @@ function eventElementsForMeasure(
           id: `el-stem-${event.id}`,
           sourceId: event.id,
           type: "stem",
-
           x: x + anchor.x,
           y: noteY + anchor.y,
-
           bbox: {
-            left: -0.075,
-            right: 0.06,
-            top: stem.direction === "up" ? -stemLength : 0 + 0.075,
-            bottom: stem.direction === "up" ? 0 : stemLength
+            left: CONFIG.STEM_BBOX_LEFT,
+            right: CONFIG.STEM_BBOX_RIGHT,
+            top: stem.direction === "up" ? -CONFIG.STEM_LENGTH : CONFIG.STEM_BBOX_DOWN_PADDING_TOP,
+            bottom: stem.direction === "up" ? 0 : CONFIG.STEM_LENGTH
           },
-
           path: [
             { type: "M", x: 0, y: 0 },
             {
               type: "L",
               x: 0,
-              y: stem.direction === "up" ? -stemLength : stemLength
+              y: stem.direction === "up" ? -CONFIG.STEM_LENGTH : CONFIG.STEM_LENGTH
             }
           ]
         });
@@ -359,73 +295,125 @@ function eventElementsForMeasure(
     // ------------------------------------------------
     // REST
     // ------------------------------------------------
-
     else if (event.kind === "rest") {
       elements.push({
         id: `el-rest-${event.id}`,
         sourceId: event.id,
         type: "rest",
-
         x,
-        y: 1.0,
-
-        bbox: defaultBBox()
+        y: CONFIG.Y_REST_DEFAULT + staffOffsetY,
+        bbox: { ...CONFIG.BBOX_DEFAULT }
       });
     }
 
     // ------------------------------------------------
     // BARLINE
     // ------------------------------------------------
-
     else if (event.kind === "barline") {
       elements.push({
         id: `el-barline-${event.id}`,
         sourceId: event.id,
         type: "barline",
-
         x,
-        y: 0,
-
-        bbox: {
-          left: -0.06,
-          top: 0,
-          right: 0.06,
-          bottom: 4.0
-        }
+        y: staffOffsetY,
+        bbox: { ...CONFIG.BBOX_BARLINE }
       });
     }
     
     // ------------------------------------------------
     // CLEF
     // ------------------------------------------------
-
     else if (event.kind === "clef") {
       const clefGlyphs: Record<string, number> = {
-        treble: 0xe050,
-        bass: 0xe062,
-        alto: 0xe05c,
-        tenor: 0xe05c,
-        treble8vb: 0xe052,
-        bass8vb: 0xe062,
-        percussion: 0xe069,
+        treble: 0xe050, bass: 0xe062, alto: 0xe05c, tenor: 0xe05c,
+        treble8vb: 0xe052, bass8vb: 0xe062, percussion: 0xe069,
       };
-      const clefY: Record<string, number> = {
-        treble: 2.5,    // G line = staff position 2 → y = (4-2)*0.5 = 1.0
-        bass: 0.5,      // F line = staff position 3 → y = (4-3)*0.5 = 0.5
-        alto: 1.0,      // C line = staff position 2
-        tenor: 0.5,     // C line = staff position 3
-        treble8vb: 1.0,
-        bass8vb: 0.5,
-        percussion: 1.0,
-      };
+      
       elements.push({
         id: `el-clef-${event.id}`,
         sourceId: event.id,
         type: "clef",
-        x: 0, // Claude's Fix: forces clef to the start of the measure preamble
-        y: clefY[event.clef] ?? 1.0,
-        bbox: { left: 0, top: -1.5, right: 1.5, bottom: 2.0 },
+        x: 0, 
+        y: (CONFIG.Y_CLEFS[event.clef] ?? 1.0) + staffOffsetY,
+        bbox: { ...CONFIG.BBOX_CLEF },
         glyph: { codepoint: clefGlyphs[event.clef] ?? 0xe050 }
+      });
+    }
+
+    // ------------------------------------------------
+    // KEY SIGNATURE (Armadura)
+    // ------------------------------------------------
+    else if (event.kind === "keysig") {
+      // Safely access the number of fifths (positive = sharps, negative = flats)
+      const keyObj = event["key" as keyof typeof event] as any;
+      const fifths = keyObj?.fifths ?? 0;
+      const isSharp = fifths > 0;
+      const count = Math.abs(fifths);
+      
+      const SMUFL_SHARP = 0xE262;
+      const SMUFL_FLAT = 0xE260;
+      
+      // Standard treble clef vertical offsets for accidentals
+      const sharpY = [0.5, 2.0, -0.5, 1.0, 2.5, 0.0, 1.5]; // F, C, G, D, A, E, B
+      const flatY = [2.0, 0.5, 2.5, 1.0, 3.0, 1.5, 3.5];   // B, E, A, D, G, C, F
+
+      for (let i = 0; i < count && i < 7; i++) {
+        const yOffset = isSharp ? sharpY[i] : flatY[i];
+        const glyphCode = isSharp ? SMUFL_SHARP : SMUFL_FLAT;
+        
+        elements.push({
+          id: `el-keysig-${event.id}-${i}`,
+          sourceId: event.id,
+          type: "keysig",
+          // Stagger them horizontally based on their index
+          x: preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH - CONFIG.PREAMBLE_KEYSIG_WIDTH + (i * 0.8),
+          y: (yOffset ?? 1.0) + staffOffsetY,
+          bbox: { ...CONFIG.BBOX_KEYSIG },
+          glyph: { codepoint: glyphCode }
+        });
+      }
+    }
+
+    // ------------------------------------------------
+    // TIME SIGNATURE (COMPÁS)
+    // ------------------------------------------------
+    else if (event.kind === "timesig") {
+      const digitGlyphs: Record<number, number> = {
+        0: 0xe080, 1: 0xe081, 2: 0xe082, 3: 0xe083, 4: 0xe084,
+        5: 0xe085, 6: 0xe086, 7: 0xe087, 8: 0xe088, 9: 0xe089
+      };
+
+      const rawValue = event["value" as keyof typeof event] || "4/4";
+      let num = 4;
+      let den = 4;
+
+      if (typeof rawValue === "string" && rawValue.includes("/")) {
+        const parts = rawValue.split("/");
+        num = parseInt(parts[0] || "4", 10);
+        den = parseInt(parts[1] || "4", 10);
+      } else {
+        num = (event["numerator" as keyof typeof event] as number) ?? 4;
+        den = (event["denominator" as keyof typeof event] as number) ?? 4;
+      }
+
+      elements.push({
+        id: `el-timesig-num-${event.id}`,
+        sourceId: event.id,
+        type: "clef", 
+        x: preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH, 
+        y: CONFIG.Y_TIMESIG_NUMERATOR + staffOffsetY, 
+        bbox: { ...CONFIG.BBOX_TIMESIG },
+        glyph: { codepoint: digitGlyphs[num] ?? 0xe084 }
+      });
+
+      elements.push({
+        id: `el-timesig-den-${event.id}`,
+        sourceId: event.id,
+        type: "clef",
+        x: preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH,
+        y: CONFIG.Y_TIMESIG_DENOMINATOR + staffOffsetY,
+        bbox: { ...CONFIG.BBOX_TIMESIG },
+        glyph: { codepoint: digitGlyphs[den] ?? 0xe084 }
       });
     }
   }
@@ -437,134 +425,76 @@ function eventElementsForMeasure(
 // STAFF LINES
 // ----------------------------------------------------
 
-function createSystemStaffLines(
-  score: Score,
-  systemWidth: number
-): EngravingSystem["staffLines"] {
-  return score.staves.map(
-    (staff, index) => ({
-      staffId: staff.id,
-
-      x: 0,
-      y: index * 10,
-
-      width: systemWidth,
-
-      lineCount: staff.lineCount
-    })
-  );
+function createSystemStaffLines(score: Score, systemWidth: number): EngravingSystem["staffLines"] {
+  return score.staves.map((staff, index) => ({
+    staffId: staff.id,
+    x: 0,
+    y: index * CONFIG.SYSTEM_HEIGHT_SPACING,
+    width: systemWidth,
+    lineCount: staff.lineCount
+  }));
 }
 
 // ----------------------------------------------------
 // SKYLINE COLLISION
 // ----------------------------------------------------
 
-function runSkylinePlacement(
-  elements: EngravingElement[],
-  staffIds: string[]
-): EngravingElement[] {
-  const topSkylines =
-    new Map<string, Skyline>();
-
-  const bottomSkylines =
-    new Map<string, Skyline>();
+function runSkylinePlacement(elements: EngravingElement[], staffIds: string[]): EngravingElement[] {
+  const topSkylines = new Map<string, Skyline>();
+  const bottomSkylines = new Map<string, Skyline>();
 
   for (const staffId of staffIds) {
     topSkylines.set(staffId, {
       direction: "up",
-      segments: [
-        {
-          xStart: 0,
-          xEnd: 10000,
-          y: 0
-        }
-      ]
+      segments: [{ xStart: 0, xEnd: CONFIG.SKYLINE_MAX_X_SPAN, y: 0 }]
     });
 
     bottomSkylines.set(staffId, {
       direction: "down",
-      segments: [
-        {
-          xStart: 0,
-          xEnd: 10000,
-          y: 4.0
-        }
-      ]
+      segments: [{ xStart: 0, xEnd: CONFIG.SKYLINE_MAX_X_SPAN, y: CONFIG.STAFF_BOTTOM_Y }]
     });
   }
 
-  const fallbackStaffId =
-    staffIds[0] ?? "default";
-
+  const fallbackStaffId = staffIds[0] ?? "default";
   const output = [...elements];
 
   for (const element of output) {
-    const staffId =
-      fallbackStaffId;
-
-    const top =
-      topSkylines.get(staffId)!;
-
-    const bottom =
-      bottomSkylines.get(staffId)!;
+    const staffId = fallbackStaffId;
+    const top = topSkylines.get(staffId)!;
+    const bottom = bottomSkylines.get(staffId)!;
 
     if (element.type === "dynamic") {
-      const placed =
-        placeBelowSkyline(
-          bottom,
-          element.x - 0.5,
-          element.x + 0.5,
-          0.8,
-          0.4
-        );
-
-      element.y = placed.y;
-
-      bottomSkylines.set(
-        staffId,
-        placed.updatedSkyline
+      const placed = placeBelowSkyline(
+        bottom,
+        element.x - CONFIG.SKYLINE_DYNAMICS.xPad,
+        element.x + CONFIG.SKYLINE_DYNAMICS.xPad,
+        CONFIG.SKYLINE_DYNAMICS.hPad,
+        CONFIG.SKYLINE_DYNAMICS.margin
       );
+      element.y = placed.y;
+      bottomSkylines.set(staffId, placed.updatedSkyline);
     }
-
-    else if (
-      element.type === "lyric" ||
-      element.type === "text"
-    ) {
-      const placed =
-        placeBelowSkyline(
-          bottom,
-          element.x - 0.8,
-          element.x + 0.8,
-          0.9,
-          0.4
-        );
-
-      element.y = placed.y;
-
-      bottomSkylines.set(
-        staffId,
-        placed.updatedSkyline
+    else if (element.type === "lyric" || element.type === "text") {
+      const placed = placeBelowSkyline(
+        bottom,
+        element.x - CONFIG.SKYLINE_LYRICS.xPad,
+        element.x + CONFIG.SKYLINE_LYRICS.xPad,
+        CONFIG.SKYLINE_LYRICS.hPad,
+        CONFIG.SKYLINE_LYRICS.margin
       );
+      element.y = placed.y;
+      bottomSkylines.set(staffId, placed.updatedSkyline);
     }
-
-    else if (
-      element.type === "articulation"
-    ) {
-      const placed =
-        placeAboveSkyline(
-          top,
-          element.x - 0.5,
-          element.x + 0.5,
-          0.6,
-          0.3
-        );
-
-      element.y = placed.y;
-
-      topSkylines.set(
-        staffId,
-        placed.updatedSkyline
+    else if (element.type === "articulation") {
+      const placed = placeAboveSkyline(
+        top,
+        element.x - CONFIG.SKYLINE_ARTIC.xPad,
+        element.x + CONFIG.SKYLINE_ARTIC.xPad,
+        CONFIG.SKYLINE_ARTIC.hPad,
+        CONFIG.SKYLINE_ARTIC.margin
       );
+      element.y = placed.y;
+      topSkylines.set(staffId, placed.updatedSkyline);
     }
   }
 
@@ -580,309 +510,146 @@ export function engrave(
   params: LayoutParameters,
   fonts: FontMetrics
 ): EngravingResult {
-  const sliceMap =
-    buildSliceMap(score);
-
+  const sliceMap = buildSliceMap(score);
   void sliceMap;
 
-  // Resolve beam groups
   for (const staff of score.staves) {
-    for (
-      let voiceId = 1;
-      voiceId <= 4;
-      voiceId += 1
-    ) {
-      resolveBeamGroups(
-        score,
-        staff.id,
-        voiceId
-      );
+    for (let voiceId = 1; voiceId <= 4; voiceId += 1) {
+      resolveBeamGroups(score, staff.id, voiceId);
     }
   }
 
-  // Place accidentals
-  const notesByTick =
-    new Map<number, NoteEvent[]>();
-
+  const notesByTick = new Map<number, NoteEvent[]>();
   for (const event of score.events.values()) {
-    if (event.kind !== "note") {
-      continue;
-    }
-
-    const list =
-      notesByTick.get(event.tick) ??
-      [];
-
+    if (event.kind !== "note") continue;
+    const list = notesByTick.get(event.tick) ?? [];
     list.push(event);
-
-    notesByTick.set(
-      event.tick,
-      list
-    );
+    notesByTick.set(event.tick, list);
   }
 
   for (const [tick, notes] of notesByTick.entries()) {
-    const key =
-      getActiveKeySignature(
-        score,
-        tick
-      );
-
+    const key = getActiveKeySignature(score, tick);
     placeAccidentals(notes, key);
   }
 
-  // Measure widths
-  const widths =
-    new Map<string, number>();
-
+  const widths = new Map<string, number>();
   for (const measure of score.measures) {
-    widths.set(
-      measure.id,
-      baseMeasureWidth(
-        score,
-        measure
-      )
-    );
+    widths.set(measure.id, baseMeasureWidth(score, measure));
   }
 
-  // System breaking
-  const breaks =
-    breakIntoSystems(
-      score.measures,
-      widths,
-      params
-    );
-
-  const staffIds =
-    score.staves.map(
-      (s) => s.id
-    );
-
+  const breaks = breakIntoSystems(score.measures, widths, params);
+  const staffIds = score.staves.map((s) => s.id);
   const systems: EngravingSystem[] = [];
+  let systemY = params.marginTop;
 
-  let systemY =
-    params.marginTop;
-
-  for (
-    let systemIndex = 0;
-    systemIndex <
-    breaks.systems.length;
-    systemIndex += 1
-  ) {
-    const systemLayout =
-      breaks.systems[
-        systemIndex
-      ]!;
-
-    const measureModels =
-      systemLayout.measureIds
-        .map((measureId) =>
-          score.measures.find(
-            (measure) =>
-              measure.id ===
-              measureId
-          )
-        )
-        .filter(
-          (
-            measure
-          ): measure is Measure =>
-            Boolean(measure)
-        );
+  for (let systemIndex = 0; systemIndex < breaks.systems.length; systemIndex += 1) {
+    const systemLayout = breaks.systems[systemIndex]!;
+    const measureModels = systemLayout.measureIds
+      .map((measureId) => score.measures.find((measure) => measure.id === measureId))
+      .filter((measure): measure is Measure => Boolean(measure));
 
     let cursorX = 0;
-
-    const measures:
-      EngravingMeasure[] = [];
+    const measures: EngravingMeasure[] = [];
 
     for (const measure of measureModels) {
-      const naturalWidth =
-        widths.get(measure.id) ?? 6;
+      const naturalWidth = widths.get(measure.id) ?? CONFIG.DEFAULT_MEASURE_WIDTH;
+      const measureWidth = naturalWidth * systemLayout.stretchFactor;
+      const rawElements = eventElementsForMeasure(score, measure, fonts);
 
-      const measureWidth =
-        naturalWidth *
-        systemLayout.stretchFactor;
+      const scaledElements = rawElements.map((el) => ({
+        ...el,
+        x: naturalWidth > 0 ? (el.x / naturalWidth) * measureWidth : el.x
+      }));
 
-      // Ensure fonts is explicitly passed down!
-      const rawElements =
-        eventElementsForMeasure(
-          score,
-          measure,
-          fonts
-        );
-
-      const scaledElements =
-        rawElements.map((el) => ({
-          ...el,
-
-          x:
-            naturalWidth > 0
-              ? (el.x / naturalWidth) *
-                measureWidth
-              : el.x
-        }));
-
-      const elements =
-        runSkylinePlacement(
-          scaledElements,
-          staffIds
-        );
+      const elements = runSkylinePlacement(scaledElements, staffIds);
 
       measures.push({
         measureId: measure.id,
-
         x: cursorX,
         y: 0,
-
         width: measureWidth,
-
         elements,
-
         spanners: []
       });
 
       cursorX += measureWidth;
     }
 
-    const systemWidth =
-      params.pageWidth -
-      params.marginLeft -
-      params.marginRight;
+    const systemWidth = params.pageWidth - params.marginLeft - params.marginRight;
 
     systems.push({
       id: `system-${systemIndex}`,
-
       x: params.marginLeft,
       y: systemY,
-
       width: systemWidth,
-
-      height:
-        score.staves.length * 10,
-
+      height: score.staves.length * CONFIG.SYSTEM_HEIGHT_SPACING,
       measures,
-
       bracketElements: [],
-
-      staffLines:
-        createSystemStaffLines(
-          score,
-          systemWidth
-        )
+      staffLines: createSystemStaffLines(score, systemWidth)
     });
 
-    systemY +=
-      score.staves.length * 10 +
-      params.systemSpacing;
+    systemY += score.staves.length * CONFIG.SYSTEM_HEIGHT_SPACING + params.systemSpacing;
   }
 
-  // Slur/tie geometry
-  const eventPositions =
-    new Map<
-      string,
-      { x: number; y: number }
-    >();
-
+  const eventPositions = new Map<string, { x: number; y: number }>();
   for (const system of systems) {
     for (const measure of system.measures) {
       for (const el of measure.elements) {
-        if (
-          el.sourceId &&
-          el.type === "notehead"
-        ) {
-          eventPositions.set(
-            el.sourceId,
-            {
-              x:
-                system.x +
-                measure.x +
-                el.x,
-
-              y:
-                system.y +
-                measure.y +
-                el.y
-            }
-          );
+        if (el.sourceId && el.type === "notehead") {
+          eventPositions.set(el.sourceId, {
+            x: system.x + measure.x + el.x,
+            y: system.y + measure.y + el.y
+          });
         }
       }
     }
   }
 
   for (const spanner of score.spanners.values()) {
-    if (
-      spanner.kind !== "slur" &&
-      spanner.kind !== "tie"
-    ) {
-      continue;
-    }
+    if (spanner.kind !== "slur" && spanner.kind !== "tie") continue;
 
-    const startPos =
-      eventPositions.get(
-        spanner.startId
-      );
+    const startPos = eventPositions.get(spanner.startId);
+    const endPos = eventPositions.get(spanner.endId);
+    if (!startPos || !endPos) continue;
 
-    const endPos =
-      eventPositions.get(
-        spanner.endId
-      );
-
-    if (!startPos || !endPos) {
-      continue;
-    }
-
-    computeSlurGeometry(
+    const spannerPath = computeSlurGeometry(
       spanner,
       startPos,
       endPos,
-
       {
         direction: "up",
-
-        segments: [
-          {
-            xStart: 0,
-            xEnd: 100000,
-            y: startPos.y - 2
-          }
-        ]
+        segments: [{ xStart: 0, xEnd: CONFIG.SKYLINE_MAX_X_SPAN, y: startPos.y - CONFIG.SKYLINE_SLUR_OFFSET }]
       },
-
       {
         direction: "down",
-
-        segments: [
-          {
-            xStart: 0,
-            xEnd: 100000,
-            y: startPos.y + 2
-          }
-        ]
+        segments: [{ xStart: 0, xEnd: CONFIG.SKYLINE_MAX_X_SPAN, y: startPos.y + CONFIG.SKYLINE_SLUR_OFFSET }]
       }
     );
+
+    // Inject the computed spanner path directly into the first measure of the first system
+    // so the renderer has access to draw the Bézier curve.
+    if (spannerPath && systems[0]?.measures[0]) {
+      systems[0].measures[0].spanners.push({
+        id: `span-render-${spanner.id}`,
+        sourceId: spanner.id,
+        type: spanner.kind,
+        path: spannerPath,
+        bbox: { left: 0, top: -2, right: (endPos.x - startPos.x), bottom: 2 } // Fallback generic span box
+      });
+    }
   }
 
   return {
-    pages: [
-      {
-        index: 0,
-
-        width: params.pageWidth,
-        height: params.pageHeight,
-
-        systems,
-
-        pageElements: []
-      }
-    ],
-
+    pages: [{
+      index: 0,
+      width: params.pageWidth,
+      height: params.pageHeight,
+      systems,
+      pageElements: []
+    }],
     totalPages: 1
   };
 }
-
-// ----------------------------------------------------
-// INCREMENTAL RE-ENGRAVING
-// ----------------------------------------------------
 
 export function reengraveFromMeasure(
   score: Score,
@@ -894,9 +661,5 @@ export function reengraveFromMeasure(
   void fromMeasure;
   void previous;
 
-  return engrave(
-    score,
-    params,
-    fonts
-  );
+  return engrave(score, params, fonts);
 }
