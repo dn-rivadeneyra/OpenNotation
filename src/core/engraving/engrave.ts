@@ -24,7 +24,7 @@ import {
 } from "./collision/skyline.ts";
 
 import type {
-  bboxBox,
+  BoundingBox,
   EngravingElement,
   EngravingMeasure,
   EngravingResult,
@@ -58,6 +58,30 @@ function noteheadCodepoint(type: string): number {
   if (type === "half") return 0xe0a3;
   return 0xe0a4;
 }
+
+// ----------------------------------------------------
+// PREAMBLE SPACING (CLEF FIX)
+// ----------------------------------------------------
+
+const CLEF_WIDTH = 2.0;
+const KEYSIG_WIDTH = 1.0;
+const TIMESIG_WIDTH = 1.5;
+
+function computePreambleWidth(score: Score, measure: Measure): number {
+  const preambleEvents = [...score.events.values()].filter(
+    (event) =>
+      event.tick === measure.tick &&
+      (event.kind === "clef" || event.kind === "keysig" || event.kind === "timesig")
+  );
+  
+  let width = 0;
+  if (preambleEvents.some((e) => e.kind === "clef")) width += CLEF_WIDTH;
+  if (preambleEvents.some((e) => e.kind === "keysig")) width += KEYSIG_WIDTH;
+  if (preambleEvents.some((e) => e.kind === "timesig")) width += TIMESIG_WIDTH;
+  
+  return width;
+}
+
 // ----------------------------------------------------
 // SPRING SPACING
 // ----------------------------------------------------
@@ -139,11 +163,15 @@ function baseMeasureWidth(
   );
 
   const lastSpring = springs[springs.length - 1]!;
+  
+  // Add the preamble width to the base measure width
+  const preambleWidth = computePreambleWidth(score, measure);
 
   return (
     (positions[positions.length - 1] ?? 0) +
     lastSpring.proportionalWidth +
-    1.0
+    1.0 + 
+    preambleWidth
   );
 }
 
@@ -156,6 +184,8 @@ function eventElementsForMeasure(
   measure: Measure,
   fonts: FontMetrics
 ): EngravingElement[] {
+  const preambleWidth = computePreambleWidth(score, measure);
+  
   const tickXMap = buildTickXMap(
     score,
     measure
@@ -172,8 +202,7 @@ function eventElementsForMeasure(
         left.tick - right.tick
     );
 
-  // Count active voices per staff/tick
-  // for stem direction logic.
+  // Count active voices per staff/tick for stem direction logic.
   const voicesPerStaffTick =
     new Map<string, Set<number>>();
 
@@ -203,9 +232,9 @@ function eventElementsForMeasure(
   const elements: EngravingElement[] = [];
 
   for (const event of events) {
+    // X is now offset by the preamble width so notes don't crash into the clef
     const x =
-      tickXMap.get(event.tick) ??
-      (event.tick - measure.tick) / 480;
+      (tickXMap.get(event.tick) ?? (event.tick - measure.tick) / 480) + preambleWidth;
 
     // ------------------------------------------------
     // NOTE
@@ -266,7 +295,7 @@ function eventElementsForMeasure(
         }
       });
       // --------------------------------------------
-      // STEM
+      // STEM (Restored from your original code)
       // --------------------------------------------
 
       if (event.duration.type !== "whole") {
@@ -289,8 +318,6 @@ function eventElementsForMeasure(
         // SMuFL stemUpSE = right edge of notehead (use for up stems)
         // SMuFL stemDownNW = left edge of notehead (use for down stems)
         // SMuFL Y is upward-positive; renderer Y is downward-positive → negate Y
-        //We will have to change it in the furture to use the FontCalibration
-        //FONTCALIBRATION
         const anchor =
           stem.direction === "up"
             ? {
@@ -326,14 +353,6 @@ function eventElementsForMeasure(
             }
           ]
         });
-        /*console.log(
-          event.pitch.step + event.pitch.octave,
-          "dir:", stem.direction,
-          "noteY:", noteY,
-          "anchor:", JSON.stringify(anchor),
-          "stemY:", noteY + anchor.y
-        );*/
-
       }
     }
 
@@ -375,6 +394,11 @@ function eventElementsForMeasure(
         }
       });
     }
+    
+    // ------------------------------------------------
+    // CLEF
+    // ------------------------------------------------
+
     else if (event.kind === "clef") {
       const clefGlyphs: Record<string, number> = {
         treble: 0xe050,
@@ -398,7 +422,7 @@ function eventElementsForMeasure(
         id: `el-clef-${event.id}`,
         sourceId: event.id,
         type: "clef",
-        x: 0,
+        x: 0, // Claude's Fix: forces clef to the start of the measure preamble
         y: clefY[event.clef] ?? 1.0,
         bbox: { left: 0, top: -1.5, right: 1.5, bottom: 2.0 },
         glyph: { codepoint: clefGlyphs[event.clef] ?? 0xe050 }
@@ -679,6 +703,7 @@ export function engrave(
         naturalWidth *
         systemLayout.stretchFactor;
 
+      // Ensure fonts is explicitly passed down!
       const rawElements =
         eventElementsForMeasure(
           score,
