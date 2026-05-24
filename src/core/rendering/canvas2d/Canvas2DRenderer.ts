@@ -8,8 +8,37 @@ import type {
   EngravingStaffLine,
   PathCommand,
   SmuflGlyph
-} from "../../engraving/index.js";
-import type { FontAdapterLike, HitElementRecord, IRenderer, Viewport } from "../IRenderer.js";
+} from "../../engraving/index.ts";
+
+import type {
+  FontAdapterLike,
+  HitElementRecord,
+  IRenderer,
+  Viewport
+} from "../IRenderer.ts";
+
+function getGlyphMetrics(
+  glyph: SmuflGlyph,
+  fonts: FontAdapterLike
+) {
+  const name = glyph.name ?? "unknown";
+
+  const anchors =
+    fonts.metadata?.glyphsWithAnchors?.[name];
+
+  // fallback (safe default)
+  if (!anchors) {
+    return {
+      anchorX: 0,
+      anchorY: 0
+    };
+  }
+
+  return {
+    anchorX: anchors.stemUpSE?.[0] ?? 0,
+    anchorY: -(anchors.stemUpSE?.[1] ?? 0)
+  };
+}
 
 function toPxX(valueInStaffSpaces: number, viewport: Viewport): number {
   return valueInStaffSpaces * viewport.spatium * viewport.scale;
@@ -19,17 +48,33 @@ function toPxY(valueInStaffSpaces: number, viewport: Viewport): number {
   return valueInStaffSpaces * viewport.spatium * viewport.scale;
 }
 
-function translateBBox(bbox: BoundingBox, x: number, y: number): BoundingBox {
+function normalizeBBox(b: BoundingBox): BoundingBox {
   return {
-    left: x + bbox.left,
-    top: y + bbox.top,
-    right: x + bbox.right,
-    bottom: y + bbox.bottom
+    left: Math.min(b.left, b.right),
+    right: Math.max(b.left, b.right),
+    top: Math.min(b.top, b.bottom),
+    bottom: Math.max(b.top, b.bottom)
   };
 }
 
 function includesPoint(bbox: BoundingBox, x: number, y: number): boolean {
-  return x >= bbox.left && x <= bbox.right && y >= bbox.top && y <= bbox.bottom;
+  const b = normalizeBBox(bbox);
+
+  return (
+    x >= b.left &&
+    x <= b.right &&
+    y >= b.top &&
+    y <= b.bottom
+  );
+}
+
+function translateBBox(bbox: BoundingBox, x: number, y: number): BoundingBox {
+  return {
+    left: bbox.left + x,
+    right: bbox.right + x,
+    top: bbox.top + y,
+    bottom: bbox.bottom + y
+  };
 }
 
 export class Canvas2DRenderer implements IRenderer {
@@ -37,61 +82,46 @@ export class Canvas2DRenderer implements IRenderer {
   private fonts: FontAdapterLike | null = null;
   private lastResult: EngravingResult | null = null;
   private lastViewport: Viewport | null = null;
+
   private readonly elementMap = new Map<string, HitElementRecord>();
   private highlights = new Set<string>();
 
-  /**
-   * Initializes the canvas 2D backend.
-   *
-   * @param canvas Target HTML canvas.
-   * @param fonts Font adapter for SMuFL rendering.
-   */
+  private currentViewport: Viewport | null = null;
+
   async init(canvas: HTMLCanvasElement, fonts: FontAdapterLike): Promise<void> {
     const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Canvas 2D context is not available.");
-    }
+    if (!context) throw new Error("Canvas 2D context is not available.");
+
     this.ctx = context;
     this.fonts = fonts;
   }
 
-  /**
-   * Renders all pages in the engraving result.
-   *
-   * @param result Engraving geometry tree.
-   * @param viewport Viewport transform.
-   */
   render(result: EngravingResult, viewport: Viewport): void {
-    if (!this.ctx) {
-      throw new Error("Renderer not initialized.");
-    }
+    if (!this.ctx) throw new Error("Renderer not initialized.");
+
     this.lastResult = result;
     this.lastViewport = viewport;
+    this.currentViewport = viewport;
     this.elementMap.clear();
 
     this.ctx.clearRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height);
+
     for (const page of result.pages) {
       this.renderPage(page, viewport);
     }
   }
 
-  /**
-   * Renders only selected pages.
-   *
-   * @param pageIndices Page indices to draw.
-   * @param result Engraving geometry tree.
-   * @param viewport Viewport transform.
-   */
   renderPages(pageIndices: number[], result: EngravingResult, viewport: Viewport): void {
-    if (!this.ctx) {
-      throw new Error("Renderer not initialized.");
-    }
+    if (!this.ctx) throw new Error("Renderer not initialized.");
+
     this.lastResult = result;
     this.lastViewport = viewport;
     this.elementMap.clear();
+
     this.ctx.clearRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height);
 
     const include = new Set(pageIndices);
+
     for (const page of result.pages) {
       if (include.has(page.index)) {
         this.renderPage(page, viewport);
@@ -99,70 +129,71 @@ export class Canvas2DRenderer implements IRenderer {
     }
   }
 
-  /**
-   * Resizes canvas dimensions and redraws.
-   *
-   * @param width Width in pixels.
-   * @param height Height in pixels.
-   */
   resize(width: number, height: number): void {
-    if (!this.ctx) {
-      throw new Error("Renderer not initialized.");
-    }
+    if (!this.ctx) throw new Error("Renderer not initialized.");
+
     this.ctx.canvas.width = width;
     this.ctx.canvas.height = height;
+
     if (this.lastResult && this.lastViewport) {
       this.render(this.lastResult, this.lastViewport);
     }
   }
 
   /**
-   * Hit tests an element at screen coordinates.
-   *
-   * @param screenX X in screen pixels.
-   * @param screenY Y in screen pixels.
-   * @returns Hit engraving element or null.
+   * FIXED HIT TEST
    */
   hitTest(screenX: number, screenY: number): EngravingElement | null {
+    let best: EngravingElement | null = null;
+    let bestArea = Infinity;
+  
     for (const { element, screenBBox } of this.elementMap.values()) {
-      if (includesPoint(screenBBox, screenX, screenY)) {
-        return element;
+      const b = normalizeBBox(screenBBox);
+  
+      if (
+        screenX >= b.left &&
+        screenX <= b.right &&
+        screenY >= b.top &&
+        screenY <= b.bottom
+      ) {
+        const area =
+          (b.right - b.left) *
+          (b.bottom - b.top);
+  
+        if (area < bestArea) {
+          best = element;
+          bestArea = area;
+        }
       }
     }
-    return null;
+  
+    return best;
   }
 
-  /**
-   * Sets highlighted element IDs and re-renders current frame.
-   *
-   * @param elementIds Element IDs to highlight.
-   */
   setHighlights(elementIds: string[]): void {
     this.highlights = new Set(elementIds);
+
     if (this.lastResult && this.lastViewport) {
       this.render(this.lastResult, this.lastViewport);
     }
   }
 
-  /**
-   * Releases renderer state.
-   */
   dispose(): void {
     this.ctx = null;
     this.fonts = null;
     this.lastResult = null;
     this.lastViewport = null;
+
     this.elementMap.clear();
     this.highlights.clear();
   }
 
   private renderPage(page: EngravingPage, viewport: Viewport): void {
-    if (!this.ctx) {
-      return;
-    }
+    if (!this.ctx) return;
 
     const pageOriginX = 0;
     const pageOriginY = -viewport.scrollY;
+
     this.ctx.fillStyle = "#ffffff";
     this.ctx.fillRect(
       pageOriginX,
@@ -172,7 +203,17 @@ export class Canvas2DRenderer implements IRenderer {
     );
 
     for (const system of page.systems) {
-      this.renderSystem(system.x, system.y, system.width, system.height, system.staffLines, system.measures, viewport, pageOriginX, pageOriginY);
+      this.renderSystem(
+        system.x,
+        system.y,
+        system.width,
+        system.height,
+        system.staffLines,
+        system.measures,
+        viewport,
+        pageOriginX,
+        pageOriginY
+      );
     }
   }
 
@@ -189,6 +230,7 @@ export class Canvas2DRenderer implements IRenderer {
   ): void {
     void systemWidth;
     void systemHeight;
+
     for (const line of staffLines) {
       this.drawStaffLines(line, systemX, systemY, pageOriginX, pageOriginY, viewport);
     }
@@ -218,64 +260,118 @@ export class Canvas2DRenderer implements IRenderer {
     }
   }
 
-  private renderElement(element: EngravingElement, parentScreenX: number, parentScreenY: number, viewport: Viewport): void {
-    const screenX = parentScreenX + toPxX(element.x, viewport);
-    const screenY = parentScreenY + toPxY(element.y, viewport);
-    const bbox = {
-      left: screenX + toPxX(element.bbox.left, viewport),
-      top: screenY + toPxY(element.bbox.top, viewport),
-      right: screenX + toPxX(element.bbox.right, viewport),
-      bottom: screenY + toPxY(element.bbox.bottom, viewport)
+  private renderElement(
+    element: EngravingElement,
+    parentScreenX: number,
+    parentScreenY: number,
+    viewport: Viewport
+  ): void {
+  
+    const screenX =
+      parentScreenX + toPxX(element.x, viewport);
+  
+    const screenY =
+      parentScreenY + toPxY(element.y, viewport);
+  
+    const raw = element.bbox;
+  
+    // ✅ FIX: bbox is in element-local space → convert consistently
+    const scale = viewport.spatium * viewport.scale;
+  
+    const bbox: BoundingBox = {
+      left: screenX + raw.left * scale,
+      right: screenX + raw.right * scale,
+      top: screenY + raw.top * scale,
+      bottom: screenY + raw.bottom * scale
     };
-
-    this.elementMap.set(element.id, { element, screenBBox: bbox });
-
+  
+    // DEBUG VISUAL (keep for now)
+    this.ctx!.strokeStyle = "red";
+    this.ctx!.strokeRect(
+      bbox.left,
+      bbox.top,
+      bbox.right - bbox.left,
+      bbox.bottom - bbox.top
+    );
+  
+    this.elementMap.set(element.id, {
+      element,
+      screenBBox: bbox
+    });
+  
     if (element.glyph) {
       this.drawGlyph(element.glyph, screenX, screenY, viewport);
     } else if (element.path) {
-      // Pass the explicit element type down to handle stroke vs fill decisions
       this.drawPath(element.path, screenX, screenY, viewport, element.type);
     }
-
+  
     if (this.highlights.has(element.id)) {
       this.drawHighlight(bbox);
     }
+  } 
 
-    for (const child of element.children ?? []) {
-      this.renderElement(child, screenX, screenY, viewport);
-    }
-  }
-
-  private renderSpanner(spanner: EngravingSpanner, baseX: number, baseY: number, viewport: Viewport): void {
+  private renderSpanner(
+    spanner: EngravingSpanner,
+    baseX: number,
+    baseY: number,
+    viewport: Viewport
+  ): void {
     this.drawPath(spanner.path, baseX, baseY, viewport, "spanner");
   }
 
-  private drawGlyph(glyph: SmuflGlyph, screenX: number, screenY: number, viewport: Viewport): void {
-    if (!this.ctx || !this.fonts) {
-      return;
-    }
-
-    const fontSize = 4 * viewport.spatium * viewport.scale * (glyph.scale ?? 1);
+  private drawGlyph(
+    glyph: SmuflGlyph,
+    screenX: number,
+    screenY: number,
+    viewport: Viewport
+  ): void {
+    if (!this.ctx || !this.fonts) return;
+  
+    const fontSize =
+      4 * viewport.spatium * viewport.scale * (glyph.scale ?? 1);
+  
+    const metrics = getGlyphMetrics(glyph, this.fonts);
+  
     this.ctx.font = `${fontSize}px "${this.fonts.fontFamily}"`;
-    this.ctx.fillStyle = "#000000";
-    this.ctx.textBaseline = "middle";
-    this.ctx.fillText(String.fromCodePoint(glyph.codepoint), screenX, screenY);
+    this.ctx.fillStyle = "#000";
+  
+    // IMPORTANT: baseline must be stable for math consistency
+    this.ctx.textBaseline = "alphabetic";
+  
+    this.ctx.fillText(
+      String.fromCodePoint(glyph.codepoint),
+      screenX + metrics.anchorX * viewport.spatium * viewport.scale,
+      screenY + metrics.anchorY * viewport.spatium * viewport.scale
+    );
   }
 
-  private drawPath(path: PathCommand[], baseX: number, baseY: number, viewport: Viewport, elementType?: string): void {
-    if (!this.ctx) {
-      return;
-    }
-    
+  private drawPath(
+    path: PathCommand[],
+    baseX: number,
+    baseY: number,
+    viewport: Viewport,
+    elementType?: string
+  ): void {
+    if (!this.ctx) return;
+
     this.ctx.beginPath();
+
     for (const command of path) {
       switch (command.type) {
         case "M":
-          this.ctx.moveTo(baseX + toPxX(command.x, viewport), baseY + toPxY(command.y, viewport));
+          this.ctx.moveTo(
+            baseX + toPxX(command.x, viewport),
+            baseY + toPxY(command.y, viewport)
+          );
           break;
+
         case "L":
-          this.ctx.lineTo(baseX + toPxX(command.x, viewport), baseY + toPxY(command.y, viewport));
+          this.ctx.lineTo(
+            baseX + toPxX(command.x, viewport),
+            baseY + toPxY(command.y, viewport)
+          );
           break;
+
         case "C":
           this.ctx.bezierCurveTo(
             baseX + toPxX(command.x1, viewport),
@@ -286,20 +382,19 @@ export class Canvas2DRenderer implements IRenderer {
             baseY + toPxY(command.y, viewport)
           );
           break;
+
         case "Z":
           this.ctx.closePath();
           break;
       }
     }
 
-    // Explicitly differentiate between line-based paths (stems/spanners) and fill shapes
     if (elementType === "stem" || elementType === "spanner" || elementType === "barline") {
-      this.ctx.strokeStyle = "#000000";
-      // Scale line thickness dynamically with the viewport magnification zoom layer
+      this.ctx.strokeStyle = "#000";
       this.ctx.lineWidth = 1.5 * viewport.scale;
       this.ctx.stroke();
     } else {
-      this.ctx.fillStyle = "#000000";
+      this.ctx.fillStyle = "#000";
       this.ctx.fill();
     }
   }
@@ -312,16 +407,18 @@ export class Canvas2DRenderer implements IRenderer {
     pageOriginY: number,
     viewport: Viewport
   ): void {
-    if (!this.ctx) {
-      return;
-    }
+    if (!this.ctx) return;
+
     this.ctx.lineWidth = viewport.scale;
-    this.ctx.strokeStyle = "#000000";
-    for (let i = 0; i < line.lineCount; i += 1) {
-      const yUnits = line.y + systemY + i * 1;
+    this.ctx.strokeStyle = "#000";
+
+    for (let i = 0; i < line.lineCount; i++) {
+      const yUnits = line.y + systemY + i;
+
       const y = pageOriginY + toPxY(yUnits, viewport);
       const x1 = pageOriginX + toPxX(systemX + line.x, viewport);
       const x2 = pageOriginX + toPxX(systemX + line.x + line.width, viewport);
+
       this.ctx.beginPath();
       this.ctx.moveTo(x1, y);
       this.ctx.lineTo(x2, y);
@@ -330,23 +427,18 @@ export class Canvas2DRenderer implements IRenderer {
   }
 
   private drawHighlight(bbox: BoundingBox): void {
-    if (!this.ctx) {
-      return;
-    }
-    const normalized = {
-      left: Math.min(bbox.left, bbox.right),
-      top: Math.min(bbox.top, bbox.bottom),
-      right: Math.max(bbox.left, bbox.right),
-      bottom: Math.max(bbox.top, bbox.bottom)
-    };
-    const finalBox = translateBBox(normalized, 0, 0);
+    if (!this.ctx) return;
+
+    const b = normalizeBBox(bbox);
+
     this.ctx.strokeStyle = "#2f6dff";
     this.ctx.lineWidth = 1.5;
+
     this.ctx.strokeRect(
-      finalBox.left,
-      finalBox.top,
-      finalBox.right - finalBox.left,
-      finalBox.bottom - finalBox.top
+      b.left,
+      b.top,
+      b.right - b.left,
+      b.bottom - b.top
     );
   }
 }

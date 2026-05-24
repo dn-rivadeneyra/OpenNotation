@@ -1,12 +1,12 @@
-export * from "./types.js";
-export * from "./beaming/beamResolver.js";
-export * from "./stems/stemResolver.js";
-export * from "./accidentals/accidentalPlacer.js";
-export * from "./spacing/spacingSolver.js";
-export * from "./collision/skyline.js";
-export * from "./systems/systemBreaker.js";
-export * from "./slurs/slurPlacer.js";
-export * from "./engrave.js";
+export * from "./types.ts";
+export * from "./beaming/beamResolver.ts";
+export * from "./stems/stemResolver.ts";
+export * from "./accidentals/accidentalPlacer.ts";
+export * from "./spacing/spacingSolver.ts";
+export * from "./collision/skyline.ts";
+export * from "./systems/systemBreaker.ts";
+export * from "./slurs/slurPlacer.ts";
+export * from "./engrave.ts";
 
 export const engravingModule = {
   name: "@opennotation/engraving"

@@ -1,11 +1,11 @@
-export * from "./primitives.js";
-export * from "./events.js";
-export * from "./spanners.js";
-export * from "./structure.js";
-export * from "./score.js";
-export * from "./factory.js";
-export * from "./queries.js";
-export * from "./minimalScore.js";
+export * from "./primitives.ts";
+export * from "./events.ts";
+export * from "./spanners.ts";
+export * from "./structure.ts";
+export * from "./score.ts";
+export * from "./factory.ts";
+export * from "./queries.ts";
+export * from "./minimalScore.ts";
 
 export const modelModule = {
   name: "@opennotation/model"

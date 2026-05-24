@@ -371,8 +371,15 @@ function toDiatonicNumber(pitch: { step: Pitch["step"]; octave: number }): numbe
  * @param clef Active clef.
  * @returns Staff position (0 = bottom line, 0.5 = first space, etc.).
  */
-export function pitchToStaffPosition(pitch: Pitch, clef: ClefType): number {
+export function pitchToStaffPosition(
+  pitch: Pitch,
+  clef: ClefType
+): number {
   const bottom = CLEF_BOTTOM_LINE[clef];
-  const diatonicDistance = toDiatonicNumber(pitch) - toDiatonicNumber(bottom);
-  return diatonicDistance / 2;
+
+  const diatonicDistance =
+    toDiatonicNumber(pitch) -
+    toDiatonicNumber(bottom);
+
+  return diatonicDistance;
 }

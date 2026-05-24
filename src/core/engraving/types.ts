@@ -111,7 +111,37 @@ export type LayoutParameters = {
   stretchFactor: number;
 };
 
+export type GlyphAnchors = {
+  stemUpSE?: [number, number];
+  stemDownNW?: [number, number];
+  cutOutNE?: [number, number];
+  cutOutNW?: [number, number];
+  cutOutSE?: [number, number];
+  cutOutSW?: [number, number];
+  opticalCenter?: [number, number];
+  repeatOffset?: [number, number];
+  stemUpNW?: [number, number];
+  stemDownSW?: [number, number];
+};
+
 export type FontMetrics = {
   glyphs: Record<string, unknown>;
   engravingDefaults: Record<string, number>;
+  metadata?: {
+    glyphsWithAnchors: Record<string, GlyphAnchors>;
+  };
+  calibration?: FontCalibration;
+};
+
+export type StemCalibration = {
+  xScale?: number;
+  xOffset?: number;
+  yOffset?: number;
+};
+
+export type FontCalibration = {
+  stemAnchors: {
+    up: StemCalibration;
+    down: StemCalibration;
+  };
 };

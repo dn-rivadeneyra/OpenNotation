@@ -35,7 +35,7 @@ export function resolveStem(
     direction = staffPosition < center ? "up" : "down";
   }
 
-  const baseY = 4 - staffPosition;
+  const baseY = staffPosition; // baseY = staffPosition;
   const stemLength = 3.5;
   const tipY = direction === "up" ? baseY - stemLength : baseY + stemLength;
 
