@@ -47,9 +47,9 @@ const CONFIG = {
   STAFF_BOTTOM_Y: 4.0,
 
   // --- Preamble Spacing Buffer ---
-  PREAMBLE_CLEF_WIDTH: 2.0,
-  PREAMBLE_KEYSIG_WIDTH: 1.5,
-  PREAMBLE_TIMESIG_WIDTH: 2.5,
+  PREAMBLE_CLEF_WIDTH: 3.0,
+  PREAMBLE_KEYSIG_WIDTH: 2.75,
+  PREAMBLE_TIMESIG_WIDTH: 3.5,
 
   // --- Vertical Positions (Y) ---
   Y_REST_DEFAULT: 1.0,
@@ -61,12 +61,14 @@ const CONFIG = {
   } as Record<string, number>,
 
   // --- Interactive Hitboxes (Bounding Boxes) ---
-  BBOX_DEFAULT:  { left: -0.5, top: -0.5, right: 0.5, bottom: 0.5 },
-  BBOX_NOTEHEAD: { left: 0, top: -0.45, right: 1.45, bottom: 0.45 },
-  BBOX_BARLINE:  { left: -0.06, top: 0, right: 0.06, bottom: 4.0 },
-  BBOX_CLEF:     { left: 0, top: -4.0, right: 2.5, bottom: 2.0 },
-  BBOX_KEYSIG:   { left: -0.2, top: -1.0, right: 1.0, bottom: 1.0 },
-  BBOX_TIMESIG:  { left: 0, top: -1.0, right: 1.5, bottom: 1.0 },
+  BBOX_DEFAULT:     { left: -0.5, top: -0.5, right: 0.5, bottom: 0.5 },
+  BBOX_NOTEHEAD:    { left: 0, top: -0.45, right: 1.45, bottom: 0.45 },
+  BBOX_BARLINE:     { left: -0.06, top: 0, right: 0.06, bottom: 4.0 },
+  BBOX_CLEF:        { left: 0, top: -4.0, right: 2.5, bottom: 2.0 },
+  BBOX_KEYSIG:      { left: -0.2, top: -1.0, right: 1.0, bottom: 1.0 },
+  BBOX_TIMESIG:     { left: 0, top: -1.0, right: 1.5, bottom: 1.0 },
+  BBOX_ACCIDENTAL:  { left: 0, top: -1.0, right: 1.5, bottom: 1.0 },
+  BBOX_RESTHALF:    { left: 0, top: -0.5, right: 1.4, bottom: 0.20 },
   
   // --- Stem Math & SMuFL Adjustments ---
   STEM_LENGTH: 3.5,
@@ -77,14 +79,58 @@ const CONFIG = {
   STEM_UP_ANCHOR_Y_OFFSET: -0.068,  
   STEM_DOWN_ANCHOR_X_OFFSET: 0.068, 
 
-  // --- Skyline Collision Padding (width, height, margin) ---
+  // --- Skyline Collision Padding ---
   SKYLINE_DYNAMICS: { xPad: 0.5, hPad: 0.8, margin: 0.4 },
   SKYLINE_LYRICS:   { xPad: 0.8, hPad: 0.9, margin: 0.4 },
   SKYLINE_ARTIC:    { xPad: 0.5, hPad: 0.6, margin: 0.3 },
   SKYLINE_SLUR_OFFSET: 2.0,
   SKYLINE_MAX_X_SPAN: 10000,
-};
+  AABB_COLLISION_PADDING: 0.2,
+  AABB_MAX_ITERATIONS: 5,
 
+  // --- Math & Internal Magic Numbers ---
+  MATH: {
+    STAFF_LINES_BASELINE: 4,
+    STAFF_LINE_MULTIPLIER: 0.5,
+    ACCIDENTAL_X_OFFSET: -1.25,
+    KEYSIG_X_STAGGER: 0.8,
+    MAX_KEY_FIFTHS: 7,
+    MAX_VOICES: 4,
+    DEFAULT_NUMERATOR: 4,
+    DEFAULT_DENOMINATOR: 4,
+    PARSE_BASE_10: 10,
+    SPANNER_BBOX_TOP: -2,
+    SPANNER_BBOX_BOTTOM: 2,
+  },
+
+  // --- Glyph Definitions (SMuFL) ---
+  SMUFL: {
+    NOTEHEAD_WHOLE: 0xe0a2,
+    NOTEHEAD_HALF: 0xe0a3,
+    NOTEHEAD_BLACK: 0xe0a4,
+    REST_WHOLE: 0xe4e3,
+    REST_HALF: 0xe4e4,
+    REST_QUARTER: 0xe4e5,
+    REST_EIGHTH: 0xe4e6,
+    ACC_SHARP: 0xe262,
+    ACC_FLAT: 0xe260,
+    ACC_NATURAL: 0xe261,
+    ACC_DOUBLE_SHARP: 0xe263,
+    ACC_DOUBLE_FLAT: 0xe264,
+    CLEF_TREBLE: 0xe050,
+    CLEF_BASS: 0xe062,
+    CLEF_ALTO: 0xe05c,
+    CLEF_TREBLE8VB: 0xe052,
+    CLEF_PERCUSSION: 0xe069,
+    DIGITS: [0xe080, 0xe081, 0xe082, 0xe083, 0xe084, 0xe085, 0xe086, 0xe087, 0xe088, 0xe089] as Record<number, number>
+  },
+
+  // --- Keysig Offsets ---
+  KEYSIG_Y_OFFSETS: {
+    SHARP: [0.5, 2.0, -0.5, 1.0, 2.5, 0.0, 1.5],
+    FLAT: [2.0, 0.5, 2.5, 1.0, 3.0, 1.5, 3.5]
+  }
+};
 // ============================================================================
 
 // Staff positions are 0-based from the bottom line.
@@ -99,6 +145,17 @@ function noteheadCodepoint(type: string): number {
   if (type === "whole") return 0xe0a2;
   if (type === "half") return 0xe0a3;
   return 0xe0a4;
+}
+
+function restCodepoint(type: string): number {
+  switch (type) {
+    case "whole": return 0xe4e3; // restWhole
+    case "half": return 0xe4e4;  // restHalf
+    case "eighth": 
+    case "eight": return 0xe4e6; // rest8th
+    case "quarter":
+    default: return 0xe4e5;      // restQuarter
+  }
 }
 
 function computePreambleWidth(score: Score, measure: Measure): number {
@@ -245,6 +302,27 @@ function eventElementsForMeasure(
         bbox: { ...CONFIG.BBOX_NOTEHEAD },
         glyph: { codepoint: noteheadCodepoint(event.duration.type) }
       });
+
+      if (event.accidental !== null) {
+        const accidentalGlyphs: Record<string, number> = {
+          sharp:        0xe262,
+          flat:         0xe260,
+          natural:      0xe261,
+          "double-sharp": 0xe263,
+          "double-flat":  0xe264,
+          "sharp-up":   0xe262,
+          "flat-down":  0xe260,
+        };
+        elements.push({
+          id: `el-acc-${event.id}`,
+          sourceId: event.id,
+          type: "accidental",
+          x: x - 1.25, // offset left of notehead
+          y: noteY,
+          bbox: { ...CONFIG.BBOX_ACCIDENTAL },
+          glyph: { codepoint: accidentalGlyphs[event.accidental] ?? 0xe261 }
+        });
+      }
       
       // --------------------------------------------
       // STEM
@@ -302,7 +380,8 @@ function eventElementsForMeasure(
         type: "rest",
         x,
         y: CONFIG.Y_REST_DEFAULT + staffOffsetY,
-        bbox: { ...CONFIG.BBOX_DEFAULT }
+        bbox: { ...CONFIG.BBOX_RESTHALF },
+        glyph: { codepoint: restCodepoint(event.duration.type) }
       });
     }
 
@@ -399,7 +478,7 @@ function eventElementsForMeasure(
       elements.push({
         id: `el-timesig-num-${event.id}`,
         sourceId: event.id,
-        type: "clef", 
+        type: "timesig", 
         x: preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH, 
         y: CONFIG.Y_TIMESIG_NUMERATOR + staffOffsetY, 
         bbox: { ...CONFIG.BBOX_TIMESIG },
@@ -556,10 +635,15 @@ export function engrave(
       const measureWidth = naturalWidth * systemLayout.stretchFactor;
       const rawElements = eventElementsForMeasure(score, measure, fonts);
 
-      const scaledElements = rawElements.map((el) => ({
-        ...el,
-        x: naturalWidth > 0 ? (el.x / naturalWidth) * measureWidth : el.x
-      }));
+      const scaledElements = rawElements.map((el) => {
+        if (el.type === "clef" || el.type === "keysig" || el.type === "timesig") {
+          return el;
+        }
+        return {
+          ...el,
+          x: naturalWidth > 0 ? (el.x / naturalWidth) * measureWidth : el.x
+        };
+      });
 
       const elements = runSkylinePlacement(scaledElements, staffIds);
 
