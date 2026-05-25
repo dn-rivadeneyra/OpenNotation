@@ -1,0 +1,397 @@
+# DeepWiki Q&A with Code Context for Repository: musescore/MuseScore
+## Q1
+How are collisions handled in MuseScore?
+## Collision Handling in MuseScore
+This codemap explores how MuseScore prevents and resolves collisions between notation elements using horizontal spacing and vertical autoplacement. It traces the logic from high-level system layout down to fine-grained shape intersection tests. Key logic resides in HorizontalSpacing [1c] and Autoplace [2b].
+### 1. Horizontal Collision Avoidance
+Traces how MuseScore calculates horizontal gaps between segments using shapes and padding tables to prevent overlapping notation.
+### 1a. Initiate Segment Spacing (`horizontalspacing.cpp:240`)
+Starts the spacing process for a group of measures in a system.
+```text
+std::vector<SegmentPosition> segmentPositions = spaceSegments(segList, startSegIdx, ctx);
+```
+### 1b. Space Against Previous Segments (`horizontalspacing.cpp:280`)
+Iterates through segments to position them against previous ones.
+```text
+spaceAgainstPreviousSegments(curSeg, placedSegments, ctx);
+```
+### 1c. Calculate Min Horizontal Distance (`horizontalspacing.cpp:1296`)
+Calculates the minimum distance between two segments by checking staff shapes.
+```text
+d = minHorizontalDistance(fshape, ns->staffShape(staffIdx), sp, squeezeFactor);
+```
+### 1d. Lookup Type-Based Padding (`horizontalspacing.cpp:1413`)
+Looks up the base padding between two specific element types from the style-defined table.
+```text
+double padding = paddingTable.at(type1).at(type2);
+```
+### 1e. Determine Kerning Strategy (`horizontalspacing.cpp:1211`)
+Determines if elements can 'kern' (tuck into each other) or must remain strictly separated.
+```text
+kerningType = computeKerning(item1, item2);
+```
+### 2. Vertical Autoplace (Skyline) Logic
+Traces how elements are vertically shifted to avoid overlapping with the staff's existing skyline (contour).
+### 2a. Autoplace Measure Element (`autoplace.cpp:127`)
+Main entry point for autoplacing measure-relative elements like dynamics.
+```text
+void Autoplace::autoplaceMeasureElement(const EngravingItem* item, EngravingItem::LayoutData* ldata, bool above, bool add)
+```
+### 2b. Get Staff Skyline (`autoplace.cpp:159`)
+Retrieves the 'Skyline' (the boundary of placed items) for the north or south side of the staff.
+```text
+SkylineLine& staffSkyline = above ? ss->skyline().north() : ss->skyline().south();
+```
+### 2c. Measure Distance to Skyline (`autoplace.cpp:172`)
+Calculates the minimum vertical distance required to clear the existing skyline.
+```text
+d = sk.minDistance(filteredSkyline);
+```
+### 2d. Apply Vertical Shift (`autoplace.cpp:191`)
+Shifts the element vertically if it is closer than the allowed minDistance.
+```text
+ldata->moveY(yd);
+```
+### 2e. Update Skyline with New Item (`autoplace.cpp:195`)
+Adds the newly placed element's shape to the skyline so subsequent items avoid it.
+```text
+staffSkyline.add(sh);
+```
+### 3. Shape Intersection & Clearance Math
+Traces the low-level geometry math used to detect overlaps between complex shapes (collections of rectangles).
+### 3a. Check Vertical Clearance (`shape.h:171`)
+Checks if two shapes clear each other vertically within their shared horizontal span.
+```text
+bool clearsVertically(const Shape& a) const;
+```
+### 3b. Range Intersection Test (`shape.h:197`)
+Core overlap test: checks if two horizontal or vertical ranges intersect.
+```text
+return (b + minClearance > c) && (a < d + minClearance);
+```
+### 3c. Shape Element Intersection Loop (`shape.cpp:240`)
+Iterates through all rectangles (elements) of two shapes to find the closest point.
+```text
+if (mu::engraving::intersects(ax1, ax2, bx1, bx2, minHorizontalClearance)) {
+```
+## Q2
+In my code, for some reason, when I implement the collision system, it makes everything discombobulate, floating stems, notes all over the place, misaligned time signature. Why would that be happening?
+## MuseScore Collision System Layout Pipeline
+This codemap traces the critical layout pipeline in MuseScore's collision system, showing the sequence-dependent operations that must occur in the correct order to prevent layout failures. It covers skyline lifecycle management [1a], chord and stem layout dependencies [2c], autoplace collision detection logic [3b], and the measure layout sequence [4b]. Understanding these dependencies is essential for integrating collision detection without causing floating stems, misplaced notes, or misaligned elements.
+### 1. System Layout Pipeline - Skyline Lifecycle
+Traces how skylines are initialized, cleared, and rebuilt during system layout to support collision detection.
+### 1a. Clear Skylines on System Creation (`systemlayout.cpp:119`)
+Initializes each staff's skyline to empty at the start of system layout.
+```text
+for (SysStaff* staff : system->staves()) {
+        staff->skyline().clear();
+    }
+```
+### 1b. Orchestrate System Element Layout (`systemlayout.cpp:1042`)
+Main entry point that collects elements and coordinates the layout sequence.
+```text
+void SystemLayout::layoutSystemElements(System* system, LayoutContext& ctx)
+```
+### 1c. Rebuild Skylines After Element Layout (`systemlayout.cpp:1094`)
+Rebuilds skylines with the shapes of all positioned elements for collision detection.
+```text
+createSkylines(elementsToLayout, ctx);
+```
+### 1d. Clear and Rebuild Skylines with Element Shapes (`systemlayout.cpp:1456`)
+Clears existing skyline and adds shapes from staff lines, barlines, time signatures, and chords.
+```text
+skyline.clear();
+    for (Measure* m : elementsToLayout.measures) {
+```
+### 2. Chord Layout and Stem Direction Dependencies
+Traces how chords are positioned, stem direction is determined, and how beam layout can trigger re-layout.
+### 2a. Determine Stem Direction for Chords (`segmentlayout.cpp:204`)
+Computes whether stems should point up or down based on note positions and voice context.
+```text
+ChordLayout::computeUp(c, ctx);
+
+            ChordLayout::computeUp(chord, ctx);
+```
+### 2b. Position Stems with Direction (`segmentlayout.cpp:231`)
+Lays out stems based on the computed direction, with note that direction may change.
+```text
+ChordLayout::layoutStem(chord, ctx);
+    // stem direction can change later during beam processing
+```
+### 2c. Perform Main Chord Layout with Collision Avoidance (`chordlayout.cpp:2212`)
+Central chord layout function that positions notes, handles accidentals, and avoids conflicts.
+```text
+void ChordLayout::layoutChords1(LayoutContext& ctx, Segment* segment, staff_idx_t staffIdx)
+```
+### 2d. Beam Layout May Trigger Chord Re-layout (`systemlayout.cpp:1894`)
+Beam layout can change stem direction or length, requiring chords to be re-laid out.
+```text
+if (chord->up() != prevUp || (stem && stem->length() != prevStemLength)) {
+                        // If the chord has changed direction needs to be re-laid out
+                        ChordLayout::layoutChords1(ctx, &seg, chord->vStaffIdx());
+```
+### 3. Autoplace Collision Detection
+Traces how individual elements are automatically positioned to avoid collisions with the skyline.
+### 3a. Check if Autoplace is Globally Enabled (`engravingitem.cpp:1128`)
+Autoplace only runs if the style flag Sid::autoplaceEnabled is true.
+```text
+if (!score() || !style().styleB(Sid::autoplaceEnabled)) {
+        return false;
+    }
+```
+### 3b. Retrieve Staff Skyline for Collision Check (`autoplace.cpp:159`)
+Gets the appropriate skyline (north for above, south for below) from the staff.
+```text
+SkylineLine& staffSkyline = above ? ss->skyline().north() : ss->skyline().south();
+```
+### 3c. Calculate Minimum Distance to Skyline (`autoplace.cpp:172`)
+Computes how far the element must shift to clear existing elements in the skyline.
+```text
+d = sk.minDistance(filteredSkyline);
+```
+### 3d. Apply Shift and Update Skyline (`autoplace.cpp:191`)
+Applies the vertical shift to the element and adds it to the skyline for subsequent elements.
+```text
+ldata->moveY(yd);
+    sh.translateY(yd);
+}
+if (add && item->addToSkyline()) {
+    staffSkyline.add(sh);
+```
+### 4. Layout Sequence and Timing Dependencies
+Traces the critical sequence of operations in measure layout and why order matters for collision detection.
+### 4a. Compute Stem Directions and Position Stems (`measurelayout.cpp:995`)
+First step: determine stem directions and position stems before any collision detection.
+```text
+SegmentLayout::computeChordsUp(segment, startTrack, endTrack, ctx);
+
+        SegmentLayout::layoutChordsStem(segment, startTrack, endTrack, ctx);
+```
+### 4b. Create Dummy Beams for Stem Extensions (`measurelayout.cpp:1008`)
+Computes temporary beams to extend stems correctly before horizontal spacing runs.
+```text
+/* HACK: ... compute dummy beams here, *before* horizontal spacing. */
+    for (Segment& s : measure->segments()) {
+```
+### 4c. Perform Chord Layout After Beam Setup (`measurelayout.cpp:1028`)
+Chord layout runs after beam setup to ensure stems have correct lengths for collision detection.
+```text
+ChordLayout::layoutChords1(ctx, &segment, staffIdx);
+```
+### 4d. Layout Beams and Rests Before Skyline Creation (`systemlayout.cpp:1083`)
+Beams and rests are positioned before skylines are created to ensure their shapes are included.
+```text
+BeamLayout::layoutNonCrossBeams(cr, ctx);
+    }
+
+    RestLayout::alignRests(elementsToLayout.system, ctx);
+
+    for (BarLine* bl : elementsToLayout.barlines) {
+```
+--------------------------------------------------------------------
+
+# DeepWiki Q&A with Code Context for Repository: musescore/MuseScore
+## Q1
+How are collisions handled in MuseScore?
+## Collision Handling in MuseScore
+This codemap explores how MuseScore prevents and resolves collisions between notation elements using horizontal spacing and vertical autoplacement. It traces the logic from high-level system layout down to fine-grained shape intersection tests. Key logic resides in HorizontalSpacing [1c] and Autoplace [2b].
+### 1. Horizontal Collision Avoidance
+Traces how MuseScore calculates horizontal gaps between segments using shapes and padding tables to prevent overlapping notation.
+### 1a. Initiate Segment Spacing (`horizontalspacing.cpp:240`)
+Starts the spacing process for a group of measures in a system.
+```text
+std::vector<SegmentPosition> segmentPositions = spaceSegments(segList, startSegIdx, ctx);
+```
+### 1b. Space Against Previous Segments (`horizontalspacing.cpp:280`)
+Iterates through segments to position them against previous ones.
+```text
+spaceAgainstPreviousSegments(curSeg, placedSegments, ctx);
+```
+### 1c. Calculate Min Horizontal Distance (`horizontalspacing.cpp:1296`)
+Calculates the minimum distance between two segments by checking staff shapes.
+```text
+d = minHorizontalDistance(fshape, ns->staffShape(staffIdx), sp, squeezeFactor);
+```
+### 1d. Lookup Type-Based Padding (`horizontalspacing.cpp:1413`)
+Looks up the base padding between two specific element types from the style-defined table.
+```text
+double padding = paddingTable.at(type1).at(type2);
+```
+### 1e. Determine Kerning Strategy (`horizontalspacing.cpp:1211`)
+Determines if elements can 'kern' (tuck into each other) or must remain strictly separated.
+```text
+kerningType = computeKerning(item1, item2);
+```
+### 2. Vertical Autoplace (Skyline) Logic
+Traces how elements are vertically shifted to avoid overlapping with the staff's existing skyline (contour).
+### 2a. Autoplace Measure Element (`autoplace.cpp:127`)
+Main entry point for autoplacing measure-relative elements like dynamics.
+```text
+void Autoplace::autoplaceMeasureElement(const EngravingItem* item, EngravingItem::LayoutData* ldata, bool above, bool add)
+```
+### 2b. Get Staff Skyline (`autoplace.cpp:159`)
+Retrieves the 'Skyline' (the boundary of placed items) for the north or south side of the staff.
+```text
+SkylineLine& staffSkyline = above ? ss->skyline().north() : ss->skyline().south();
+```
+### 2c. Measure Distance to Skyline (`autoplace.cpp:172`)
+Calculates the minimum vertical distance required to clear the existing skyline.
+```text
+d = sk.minDistance(filteredSkyline);
+```
+### 2d. Apply Vertical Shift (`autoplace.cpp:191`)
+Shifts the element vertically if it is closer than the allowed minDistance.
+```text
+ldata->moveY(yd);
+```
+### 2e. Update Skyline with New Item (`autoplace.cpp:195`)
+Adds the newly placed element's shape to the skyline so subsequent items avoid it.
+```text
+staffSkyline.add(sh);
+```
+### 3. Shape Intersection & Clearance Math
+Traces the low-level geometry math used to detect overlaps between complex shapes (collections of rectangles).
+### 3a. Check Vertical Clearance (`shape.h:171`)
+Checks if two shapes clear each other vertically within their shared horizontal span.
+```text
+bool clearsVertically(const Shape& a) const;
+```
+### 3b. Range Intersection Test (`shape.h:197`)
+Core overlap test: checks if two horizontal or vertical ranges intersect.
+```text
+return (b + minClearance > c) && (a < d + minClearance);
+```
+### 3c. Shape Element Intersection Loop (`shape.cpp:240`)
+Iterates through all rectangles (elements) of two shapes to find the closest point.
+```text
+if (mu::engraving::intersects(ax1, ax2, bx1, bx2, minHorizontalClearance)) {
+```
+## Q2
+In my code, for some reason, when I implement the collision system, it makes everything discombobulate, floating stems, notes all over the place, misaligned time signature. Why would that be happening?
+## MuseScore Collision System Layout Pipeline
+This codemap traces the critical layout pipeline in MuseScore's collision system, showing the sequence-dependent operations that must occur in the correct order to prevent layout failures. It covers skyline lifecycle management [1a], chord and stem layout dependencies [2c], autoplace collision detection logic [3b], and the measure layout sequence [4b]. Understanding these dependencies is essential for integrating collision detection without causing floating stems, misplaced notes, or misaligned elements.
+### 1. System Layout Pipeline - Skyline Lifecycle
+Traces how skylines are initialized, cleared, and rebuilt during system layout to support collision detection.
+### 1a. Clear Skylines on System Creation (`systemlayout.cpp:119`)
+Initializes each staff's skyline to empty at the start of system layout.
+```text
+for (SysStaff* staff : system->staves()) {
+        staff->skyline().clear();
+    }
+```
+### 1b. Orchestrate System Element Layout (`systemlayout.cpp:1042`)
+Main entry point that collects elements and coordinates the layout sequence.
+```text
+void SystemLayout::layoutSystemElements(System* system, LayoutContext& ctx)
+```
+### 1c. Rebuild Skylines After Element Layout (`systemlayout.cpp:1094`)
+Rebuilds skylines with the shapes of all positioned elements for collision detection.
+```text
+createSkylines(elementsToLayout, ctx);
+```
+### 1d. Clear and Rebuild Skylines with Element Shapes (`systemlayout.cpp:1456`)
+Clears existing skyline and adds shapes from staff lines, barlines, time signatures, and chords.
+```text
+skyline.clear();
+    for (Measure* m : elementsToLayout.measures) {
+```
+### 2. Chord Layout and Stem Direction Dependencies
+Traces how chords are positioned, stem direction is determined, and how beam layout can trigger re-layout.
+### 2a. Determine Stem Direction for Chords (`segmentlayout.cpp:204`)
+Computes whether stems should point up or down based on note positions and voice context.
+```text
+ChordLayout::computeUp(c, ctx);
+
+            ChordLayout::computeUp(chord, ctx);
+```
+### 2b. Position Stems with Direction (`segmentlayout.cpp:231`)
+Lays out stems based on the computed direction, with note that direction may change.
+```text
+ChordLayout::layoutStem(chord, ctx);
+    // stem direction can change later during beam processing
+```
+### 2c. Perform Main Chord Layout with Collision Avoidance (`chordlayout.cpp:2212`)
+Central chord layout function that positions notes, handles accidentals, and avoids conflicts.
+```text
+void ChordLayout::layoutChords1(LayoutContext& ctx, Segment* segment, staff_idx_t staffIdx)
+```
+### 2d. Beam Layout May Trigger Chord Re-layout (`systemlayout.cpp:1894`)
+Beam layout can change stem direction or length, requiring chords to be re-laid out.
+```text
+if (chord->up() != prevUp || (stem && stem->length() != prevStemLength)) {
+                        // If the chord has changed direction needs to be re-laid out
+                        ChordLayout::layoutChords1(ctx, &seg, chord->vStaffIdx());
+```
+### 3. Autoplace Collision Detection
+Traces how individual elements are automatically positioned to avoid collisions with the skyline.
+### 3a. Check if Autoplace is Globally Enabled (`engravingitem.cpp:1128`)
+Autoplace only runs if the style flag Sid::autoplaceEnabled is true.
+```text
+if (!score() || !style().styleB(Sid::autoplaceEnabled)) {
+        return false;
+    }
+```
+### 3b. Retrieve Staff Skyline for Collision Check (`autoplace.cpp:159`)
+Gets the appropriate skyline (north for above, south for below) from the staff.
+```text
+SkylineLine& staffSkyline = above ? ss->skyline().north() : ss->skyline().south();
+```
+### 3c. Calculate Minimum Distance to Skyline (`autoplace.cpp:172`)
+Computes how far the element must shift to clear existing elements in the skyline.
+```text
+d = sk.minDistance(filteredSkyline);
+```
+### 3d. Apply Shift and Update Skyline (`autoplace.cpp:191`)
+Applies the vertical shift to the element and adds it to the skyline for subsequent elements.
+```text
+ldata->moveY(yd);
+    sh.translateY(yd);
+}
+if (add && item->addToSkyline()) {
+    staffSkyline.add(sh);
+```
+### 4. Layout Sequence and Timing Dependencies
+Traces the critical sequence of operations in measure layout and why order matters for collision detection.
+### 4a. Compute Stem Directions and Position Stems (`measurelayout.cpp:995`)
+First step: determine stem directions and position stems before any collision detection.
+```text
+SegmentLayout::computeChordsUp(segment, startTrack, endTrack, ctx);
+
+        SegmentLayout::layoutChordsStem(segment, startTrack, endTrack, ctx);
+```
+### 4b. Create Dummy Beams for Stem Extensions (`measurelayout.cpp:1008`)
+Computes temporary beams to extend stems correctly before horizontal spacing runs.
+```text
+/* HACK: ... compute dummy beams here, *before* horizontal spacing. */
+    for (Segment& s : measure->segments()) {
+```
+### 4c. Perform Chord Layout After Beam Setup (`measurelayout.cpp:1028`)
+Chord layout runs after beam setup to ensure stems have correct lengths for collision detection.
+```text
+ChordLayout::layoutChords1(ctx, &segment, staffIdx);
+```
+### 4d. Layout Beams and Rests Before Skyline Creation (`systemlayout.cpp:1083`)
+Beams and rests are positioned before skylines are created to ensure their shapes are included.
+```text
+BeamLayout::layoutNonCrossBeams(cr, ctx);
+    }
+
+    RestLayout::alignRests(elementsToLayout.system, ctx);
+
+    for (BarLine* bl : elementsToLayout.barlines) {
+```
+-------------------------------------------------------------------------------------------------
+
+
+The "Golden Rule" of the Pipeline
+If you want to keep this reactive state stable as you add more features (like slurs or beam groups), remember the order of operations we enforced in the engrave loop:
+
+Resolve Beaming: Compute beam group associations first (logical structure).
+
+Calculate Rhythmic Spacing: Build the "springs" to get the base x coordinates.
+
+Calculate Preamble/Fixed Space: Account for clefs and keysigs so they don't shift.
+
+Engrave & Stretch: Generate elements with the stretchRatio applied to rhythmic gaps only.
+
+Run Collision Avoidance: Only after everything is positioned do you run the runSkylinePlacement to move things vertically.

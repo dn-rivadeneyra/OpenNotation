@@ -130,6 +130,42 @@ export function getMeasureAtTick(score: Score, tick: number): Measure | undefine
 }
 
 /**
+ * Returns whether an event starting at tick with the given duration fits entirely
+ * within the containing measure (respecting the active time signature bounds).
+ *
+ * @param score Score root.
+ * @param tick Event start tick.
+ * @param durationTicks Event duration in ticks.
+ * @returns True when the event does not cross a measure boundary.
+ */
+export function eventFitsInMeasure(score: Score, tick: number, durationTicks: number): boolean {
+  const measure = getMeasureAtTick(score, tick);
+  if (!measure) {
+    return false;
+  }
+  return tick + durationTicks <= measure.tick + measure.duration;
+}
+
+/**
+ * Validates that an event fits within its measure, throwing if it would overflow.
+ *
+ * @param score Score root.
+ * @param tick Event start tick.
+ * @param durationTicks Event duration in ticks.
+ */
+export function validateEventFitsInMeasure(score: Score, tick: number, durationTicks: number): void {
+  const measure = getMeasureAtTick(score, tick);
+  if (!measure) {
+    throw new Error(`Tick ${tick} is not inside any measure.`);
+  }
+  if (tick + durationTicks > measure.tick + measure.duration) {
+    throw new Error(
+      `Event exceeds measure ${measure.number} (${measure.duration} ticks allowed by time signature).`
+    );
+  }
+}
+
+/**
  * Gets all notes that belong to the same chord ID.
  *
  * @param score Score root.

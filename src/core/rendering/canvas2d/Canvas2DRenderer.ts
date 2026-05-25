@@ -296,7 +296,7 @@ export class Canvas2DRenderer implements IRenderer {
       bbox.top,
       bbox.right - bbox.left,
       bbox.bottom - bbox.top
-    ); */
+    );  */
   
     this.elementMap.set(element.id, {
       element,

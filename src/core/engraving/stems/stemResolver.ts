@@ -9,6 +9,20 @@ export type StemResolution = {
 };
 
 /**
+ * Derives automatic stem direction from note positions on the staff.
+ * Positions use 0 = top line, 4 = bottom line, 2 = middle.
+ */
+export function computeAutoStemDirection(staffPositions: number[]): "up" | "down" {
+  if (staffPositions.length === 0) {
+    return "up";
+  }
+
+  const center = 2;
+  const sum = staffPositions.reduce((total, position) => total + (position - center), 0);
+  return sum < 0 ? "down" : "up";
+}
+
+/**
  * Resolves stem direction and length for a note context.
  *
  * @param noteId Note identifier.

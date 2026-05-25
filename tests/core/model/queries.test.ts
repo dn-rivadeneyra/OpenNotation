@@ -6,6 +6,7 @@ import {
   createMinimalScore,
   createNoteEvent,
   createRestEvent,
+  eventFitsInMeasure,
   getActiveClef,
   getActiveKeySignature,
   getActiveTimeSig,
@@ -106,6 +107,15 @@ describe("model queries", () => {
     const score = createMinimalScore();
     const measure = getMeasureAtTick(score, TPQ * 5);
     expect(measure?.number).toBe(2);
+  });
+
+  it("eventFitsInMeasure respects 4/4 measure capacity", () => {
+    const score = createMinimalScore();
+    const measureDuration = TPQ * 4;
+    expect(eventFitsInMeasure(score, 0, TPQ)).toBe(true);
+    expect(eventFitsInMeasure(score, measureDuration - TPQ, TPQ)).toBe(true);
+    expect(eventFitsInMeasure(score, TPQ * 3, TPQ * 2)).toBe(false);
+    expect(eventFitsInMeasure(score, TPQ * 1000, TPQ)).toBe(false);
   });
 
   it("returns undefined when tick is outside score", () => {

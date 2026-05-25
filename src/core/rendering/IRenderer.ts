@@ -9,6 +9,15 @@ export type FontAdapterLike = {
   getGlyphChar(name: string): string;
   getGlyphMetrics(name: string): unknown;
   readonly engravingDefaults: Record<string, number>;
+  readonly metadata?: {
+    glyphsWithAnchors: Record<
+      string,
+      {
+        stemUpSE?: [number, number];
+        stemDownNW?: [number, number];
+      }
+    >;
+  };
   readonly isReady: boolean;
 };
 

@@ -151,7 +151,7 @@ describe("Canvas2DRenderer", () => {
     await renderer.init(createMockCanvas(ctx), createFontAdapter());
     renderer.render(createResult(), viewport);
 
-    const hit = renderer.hitTest(40, 60);
+    const hit = renderer.hitTest(40, 30);
     expect(hit?.id).toBe("note-1");
   });
 

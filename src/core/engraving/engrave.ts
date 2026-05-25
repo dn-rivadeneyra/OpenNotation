@@ -11,7 +11,8 @@ import {
   solveSpacing
 } from "./spacing/spacingSolver.ts";
 
-import { resolveBeamGroups } from "./beaming/beamResolver.ts";
+import { resolveBeamGroups, type ResolvedBeamGroup } from "./beaming/beamResolver.ts";
+import { collectBeamStemTips, layoutBeamGroup } from "./beaming/beamLayout.ts";
 import { breakIntoSystems } from "./systems/systemBreaker.ts";
 import { placeAccidentals } from "./accidentals/accidentalPlacer.ts";
 import { resolveStem } from "./stems/stemResolver.ts";
@@ -30,12 +31,12 @@ import type {
   EngravingResult,
   EngravingSystem,
   FontMetrics,
-  LayoutParameters
+  LayoutParameters,
+  PathCommand
 } from "./types.ts";
 
 // ============================================================================
 // 🎛️ GRAPHICS & INTERACTION CALIBRATION DASHBOARD
-// Edit these constants to fine-tune layout, hitboxes, and spacing.
 // ============================================================================
 
 const CONFIG = {
@@ -52,18 +53,29 @@ const CONFIG = {
   PREAMBLE_TIMESIG_WIDTH: 3.5,
 
   // --- Vertical Positions (Y) ---
-  Y_REST_DEFAULT: 1.0,
-  Y_TIMESIG_NUMERATOR: 1.0,
-  Y_TIMESIG_DENOMINATOR: 3.0,
+  // All Y values are in staff-spaces. Top line of a 5-line staff is y=0,
+  // middle line y=2, bottom line y=4. Staff lines are 1 staff-space apart.
+  Y_REST_DEFAULT: 2.0,           // Half rest hangs from the middle line
+  Y_TIMESIG_NUMERATOR: 1.0,      // Center between top line and middle line
+  Y_TIMESIG_DENOMINATOR: 3.0,    // Center between middle line and bottom line
   Y_CLEFS: {
-    treble: 2.5, bass: 0.5, alto: 1.0, tenor: 0.5,
-    treble8vb: 1.0, bass8vb: 0.5, percussion: 1.0,
+    treble: 3.0,    // G4 line (4th line from top, 2nd from bottom)
+    bass: 1.0,      // F3 line (2nd line from top, 4th from bottom)
+    alto: 2.0,      // C4 middle line
+    tenor: 1.0,     // C4 line (2nd line from top in tenor)
+    treble8vb: 3.0, // Same anchor as treble
+    bass8vb: 1.0,   // Same anchor as bass
+    percussion: 2.0 // Middle line
   } as Record<string, number>,
+
+  // --- Barline Settings ---
+  BARLINE_WIDTH: 0.12,           // Visual width of the barline stem (staff-spaces)
+  BARLINE_RIGHT_PADDING: 0.5,    // Min clearance between last glyph and barline
+  BARLINE_STAFF_HEIGHT: 4.0,     // 5 lines × 1 staff-space spacing = 4 sp
 
   // --- Interactive Hitboxes (Bounding Boxes) ---
   BBOX_DEFAULT:     { left: -0.5, top: -0.5, right: 0.5, bottom: 0.5 },
   BBOX_NOTEHEAD:    { left: 0, top: -0.45, right: 1.45, bottom: 0.45 },
-  BBOX_BARLINE:     { left: -0.06, top: 0, right: 0.06, bottom: 4.0 },
   BBOX_CLEF:        { left: 0, top: -4.0, right: 2.5, bottom: 2.0 },
   BBOX_KEYSIG:      { left: -0.2, top: -1.0, right: 1.0, bottom: 1.0 },
   BBOX_TIMESIG:     { left: 0, top: -1.0, right: 1.5, bottom: 1.0 },
@@ -77,7 +89,12 @@ const CONFIG = {
   STEM_BBOX_DOWN_PADDING_TOP: 0.075,
   STEM_UP_ANCHOR_X_SCALE: 1.10,   
   STEM_UP_ANCHOR_Y_OFFSET: -0.068,  
-  STEM_DOWN_ANCHOR_X_OFFSET: 0.068, 
+  STEM_DOWN_ANCHOR_X_OFFSET: 0.068,
+
+  // --- Beam Layout (MuseScore-style slope limits) ---
+  BEAM_THICKNESS: 0.25,
+  BEAM_MAX_SLOPE: 0.5,
+  BEAM_LEVEL_GAP: 0.15,
 
   // --- Skyline Collision Padding ---
   SKYLINE_DYNAMICS: { xPad: 0.5, hPad: 0.8, margin: 0.4 },
@@ -92,8 +109,6 @@ const CONFIG = {
   MATH: {
     STAFF_LINES_BASELINE: 4,
     STAFF_LINE_MULTIPLIER: 0.5,
-    ACCIDENTAL_X_OFFSET: -1.25,
-    KEYSIG_X_STAGGER: 0.8,
     MAX_KEY_FIFTHS: 7,
     MAX_VOICES: 4,
     DEFAULT_NUMERATOR: 4,
@@ -101,6 +116,12 @@ const CONFIG = {
     PARSE_BASE_10: 10,
     SPANNER_BBOX_TOP: -2,
     SPANNER_BBOX_BOTTOM: 2,
+  },
+  
+  // --- Offset Transformations ---
+  LAYOUT_CONSTANTS: {
+    ACCIDENTAL_X_OFFSET: 1.25,
+    KEYSIG_X_STAGGER: 0.8,
   },
 
   // --- Glyph Definitions (SMuFL) ---
@@ -131,10 +152,45 @@ const CONFIG = {
     FLAT: [2.0, 0.5, 2.5, 1.0, 3.0, 1.5, 3.5]
   }
 };
+
+// ============================================================================
+// TRANSFORMATION REGISTRY
+// Centralized logic for coordinate offsets to replace magic numbers
 // ============================================================================
 
+const LayoutRegistry = {
+  getAccidentalOffset: (noteX: number) => noteX - CONFIG.LAYOUT_CONSTANTS.ACCIDENTAL_X_OFFSET,
+
+  getKeysigOffset: (baseX: number, index: number) => baseX + (index * CONFIG.LAYOUT_CONSTANTS.KEYSIG_X_STAGGER),
+
+  getTimesigOffset: (preambleWidth: number) => preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH,
+
+  getBarlineBBox: () => ({
+    left: -CONFIG.BARLINE_WIDTH / 2,
+    top: 0,
+    right: CONFIG.BARLINE_WIDTH / 2,
+    bottom: CONFIG.BARLINE_STAFF_HEIGHT
+  }),
+
+  getBarlinePath: (): PathCommand[] => [
+    { type: "M", x: 0, y: 0 },
+    { type: "L", x: 0, y: CONFIG.BARLINE_STAFF_HEIGHT }
+  ],
+
+  // Right edge of measure content. Caller passes the X just past the last
+  // rendered glyph (already includes stretch); registry adds the constant
+  // padding plus the barline's own half-width.
+  getMeasureRightEdge: (rightmostContentX: number) =>
+    rightmostContentX + CONFIG.BARLINE_RIGHT_PADDING + CONFIG.BARLINE_WIDTH / 2
+};
+
+// ============================================================================
+
+// Maps a staff position to a Y coordinate in staff-spaces, matching the
+// renderer's convention: top line = y=0, bottom line = y=4 (one full
+// staff-space between adjacent lines).
 function staffPositionToY(staffPosition: number): number {
-  return (4 - staffPosition) * 0.5;
+  return 4 - staffPosition;
 }
 
 function noteheadCodepoint(type: string): number {
@@ -173,7 +229,25 @@ function computePreambleWidth(score: Score, measure: Measure): number {
 // SPRING SPACING
 // ----------------------------------------------------
 
-function buildTickXMap(score: Score, measure: Measure): Map<number, number> {
+// Worst-case rendered footprint of any glyph that may sit at the end of a
+// measure. Used so baseMeasureWidth always reserves enough room for the last
+// notehead/accidental/rest plus the trailing barline, regardless of how the
+// spring solver allocates the last slice's proportionalWidth.
+const LAST_GLYPH_FOOTPRINT = Math.max(
+  CONFIG.BBOX_NOTEHEAD.right,
+  CONFIG.BBOX_RESTHALF.right,
+  CONFIG.BBOX_ACCIDENTAL.right
+);
+
+type MeasureSpringLayout = {
+  preambleWidth: number;
+  springSpan: number;       // Sum of min + prop + extra across all springs
+  lastEventX: number;       // X just past the last spring's allocation
+  tickXMap: Map<number, number>;
+};
+
+function computeMeasureSpringLayout(score: Score, measure: Measure): MeasureSpringLayout {
+  const preambleWidth = computePreambleWidth(score, measure);
   const sliceMap = buildSliceMap(score);
 
   const measureSlices = sliceMap.slices.filter(
@@ -185,54 +259,48 @@ function buildTickXMap(score: Score, measure: Measure): Map<number, number> {
   const springs = buildSprings(measureSlices, score);
 
   if (springs.length === 0) {
-    return new Map();
+    return { preambleWidth, springSpan: 0, lastEventX: 0, tickXMap: new Map() };
   }
 
-  const naturalWidth = springs.reduce(
+  const springSpan = springs.reduce(
     (sum, s) => sum + s.minWidth + s.proportionalWidth + s.extraWidth,
     0
   );
 
-  const positions = solveSpacing(springs, naturalWidth);
+  const positions = solveSpacing(springs, springSpan);
   const tickXMap = new Map<number, number>();
-
-  for (let i = 0; i < measureSlices.length; i++) {
+  for (let i = 0; i < measureSlices.length; i += 1) {
     tickXMap.set(measureSlices[i]!.tick, positions[i] ?? 0);
   }
 
-  return tickXMap;
+  const lastSpring = springs[springs.length - 1]!;
+  const lastStart = positions[positions.length - 1] ?? 0;
+  const lastAllocation = lastSpring.minWidth + lastSpring.proportionalWidth + lastSpring.extraWidth;
+  const lastEventX = lastStart + lastAllocation;
+
+  return { preambleWidth, springSpan, lastEventX, tickXMap };
+}
+
+function buildTickXMap(score: Score, measure: Measure): Map<number, number> {
+  return computeMeasureSpringLayout(score, measure).tickXMap;
 }
 
 function baseMeasureWidth(score: Score, measure: Measure): number {
-  const sliceMap = buildSliceMap(score);
+  const layout = computeMeasureSpringLayout(score, measure);
 
-  const measureSlices = sliceMap.slices.filter(
-    (slice) =>
-      slice.tick >= measure.tick &&
-      slice.tick < measure.tick + measure.duration
-  );
-
-  const springs = buildSprings(measureSlices, score);
-
-  if (springs.length === 0) {
+  if (layout.springSpan === 0) {
     return CONFIG.DEFAULT_MEASURE_WIDTH;
   }
 
-  const naturalWidth = springs.reduce(
-    (sum, s) => sum + s.minWidth + s.proportionalWidth + s.extraWidth,
-    0
-  );
-
-  const positions = solveSpacing(springs, naturalWidth);
-  const lastSpring = springs[springs.length - 1]!;
-  
-  const preambleWidth = computePreambleWidth(score, measure);
+  // Reserve at least the worst-case glyph footprint so a tightly-packed last
+  // slice can still fit a notehead before the barline.
+  const naturalContentEnd = Math.max(layout.lastEventX, LAST_GLYPH_FOOTPRINT);
 
   return (
-    (positions[positions.length - 1] ?? 0) +
-    lastSpring.proportionalWidth +
-    CONFIG.MEASURE_WIDTH_PADDING + 
-    preambleWidth
+    layout.preambleWidth +
+    naturalContentEnd +
+    CONFIG.BARLINE_RIGHT_PADDING +
+    CONFIG.BARLINE_WIDTH
   );
 }
 
@@ -244,10 +312,16 @@ function eventElementsForMeasure(
   score: Score,
   measure: Measure,
   fonts: FontMetrics,
-  stretchRatio: number = 1.0 // Inject stretch factor so relative anchors remain rigid
+  stretchRatio: number = 1.0
 ): EngravingElement[] {
-  const preambleWidth = computePreambleWidth(score, measure);
-  const tickXMap = buildTickXMap(score, measure);
+  const layout = computeMeasureSpringLayout(score, measure);
+  const preambleWidth = layout.preambleWidth;
+  const tickXMap = layout.tickXMap;
+  const barlineReserve = CONFIG.BARLINE_RIGHT_PADDING + CONFIG.BARLINE_WIDTH;
+  const contentEndX =
+    layout.springSpan === 0
+      ? Math.max(0, CONFIG.DEFAULT_MEASURE_WIDTH - layout.preambleWidth - barlineReserve)
+      : layout.lastEventX;
 
   const events = [...score.events.values()]
     .filter(
@@ -268,12 +342,31 @@ function eventElementsForMeasure(
     voicesPerStaffTick.set(key, voices);
   }
 
+  // Collect beam groups for every staff/voice active in this measure so
+  // the event loop can suppress flags cheaply without re-calling the resolver.
+  const staffVoicePairs = new Set<string>();
+  for (const event of events) {
+    if (event.kind === "note") {
+      staffVoicePairs.add(`${event.staffId}:${event.voiceId}`);
+    }
+  }
+  const measureBeamGroups = [...staffVoicePairs].flatMap((pair) => {
+    const [staffId, voiceId] = pair.split(":") as [string, string];
+    return resolveBeamGroups(score, staffId, parseInt(voiceId, 10), measure);
+  });
+  const noteIdToBeamGroup = new Map<string, ResolvedBeamGroup>();
+  for (const group of measureBeamGroups) {
+    for (const noteId of group.noteIds) {
+      noteIdToBeamGroup.set(noteId, group);
+    }
+  }
+  const beamedNoteIds = new Set(measureBeamGroups.flatMap((group) => group.noteIds));
+
   const elements: EngravingElement[] = [];
 
   for (const event of events) {
-    // Only stretch the flexible musical spacing, not the fixed preamble
     const rawSpringX = tickXMap.get(event.tick) ?? (event.tick - measure.tick) / CONFIG.TICKS_PER_QUARTER;
-    const x = preambleWidth + (rawSpringX * stretchRatio);
+    const x = preambleWidth + (rawSpringX * stretchRatio) + (preambleWidth === 0 ? 1.0 : 0);
     
     const staffIndex = score.staves.findIndex(s => s.id === event.staffId);
     const staffOffsetY = staffIndex > 0 ? staffIndex * CONFIG.SYSTEM_HEIGHT_SPACING : 0;
@@ -286,7 +379,8 @@ function eventElementsForMeasure(
       const staffPos = pitchToStaffPosition(event.pitch, clef);
       const noteY = staffPositionToY(staffPos) + staffOffsetY;
       const voiceCount = voicesPerStaffTick.get(`${event.staffId}:${event.tick}`)?.size ?? 1;
-      const stem = resolveStem(event.id, staffPos, voiceCount, event.voiceId);
+      const beamGroup = noteIdToBeamGroup.get(event.id);
+      const stem = resolveStem(event.id, staffPos, voiceCount, event.voiceId, beamGroup);
 
       elements.push({
         id: `el-note-${event.id}`,
@@ -312,7 +406,7 @@ function eventElementsForMeasure(
           id: `el-acc-${event.id}`,
           sourceId: event.id,
           type: "accidental",
-          x: x - 1.25, // Fixed anchor, immune to stretch distortion
+          x: LayoutRegistry.getAccidentalOffset(x), // Controlled via registry
           y: noteY,
           bbox: { ...CONFIG.BBOX_ACCIDENTAL },
           glyph: { codepoint: accidentalGlyphs[event.accidental] ?? 0xe261 }
@@ -330,22 +424,35 @@ function eventElementsForMeasure(
           throw new Error(`Missing SMuFL anchors for ${noteheadName}`);
         }
 
+        const stemUpSE = anchors.stemUpSE;
+        const stemDownNW = anchors.stemDownNW;
+
         const anchor =
           stem.direction === "up"
-            ? {
-                x: anchors.stemUpSE[0] / CONFIG.STEM_UP_ANCHOR_X_SCALE,
-                y: -anchors.stemUpSE[1] + CONFIG.STEM_UP_ANCHOR_Y_OFFSET
-              }
-            : {
-                x: anchors.stemDownNW[0] + CONFIG.STEM_DOWN_ANCHOR_X_OFFSET,
-                y: -anchors.stemDownNW[1] 
-              };
+            ? (() => {
+                if (!stemUpSE) {
+                  throw new Error(`Missing stemUpSE anchor for ${noteheadName}`);
+                }
+                return {
+                  x: stemUpSE[0] / CONFIG.STEM_UP_ANCHOR_X_SCALE,
+                  y: -stemUpSE[1] + CONFIG.STEM_UP_ANCHOR_Y_OFFSET
+                };
+              })()
+            : (() => {
+                if (!stemDownNW) {
+                  throw new Error(`Missing stemDownNW anchor for ${noteheadName}`);
+                }
+                return {
+                  x: stemDownNW[0] + CONFIG.STEM_DOWN_ANCHOR_X_OFFSET,
+                  y: -stemDownNW[1]
+                };
+              })();
 
         elements.push({
           id: `el-stem-${event.id}`,
           sourceId: event.id,
           type: "stem",
-          x: x + anchor.x, // Fixed anchor relative to stretched note
+          x: x + anchor.x, 
           y: noteY + anchor.y,
           bbox: {
             left: CONFIG.STEM_BBOX_LEFT,
@@ -362,6 +469,30 @@ function eventElementsForMeasure(
             }
           ]
         });
+        // Add flag for unbeamed eighth/sixteenth/32nd notes only.
+        // Beamed notes suppress their flag; the beam pass below draws the beam.
+        if (!beamedNoteIds.has(event.id)) {
+          const flagGlyphs: Record<string, number> = {
+            eighth: stem.direction === "up" ? 0xe240 : 0xe241,
+            "16th":  stem.direction === "up" ? 0xe242 : 0xe243,
+            "32nd":  stem.direction === "up" ? 0xe244 : 0xe245,
+          };
+          const flagCodepoint = flagGlyphs[event.duration.type];
+          if (flagCodepoint !== undefined) {
+            const flagY = stem.direction === "up"
+              ? noteY + anchor.y - CONFIG.STEM_LENGTH
+              : noteY + anchor.y + CONFIG.STEM_LENGTH;
+            elements.push({
+              id: `el-flag-${event.id}`,
+              sourceId: event.id,
+              type: "flag",
+              x: x + anchor.x,
+              y: flagY,
+              bbox: { left: 0, top: -0.5, right: 1.5, bottom: 0.5 },
+              glyph: { codepoint: flagCodepoint }
+            });
+          }
+        }
       }
     }
 
@@ -390,7 +521,8 @@ function eventElementsForMeasure(
         type: "barline",
         x,
         y: staffOffsetY,
-        bbox: { ...CONFIG.BBOX_BARLINE }
+        bbox: LayoutRegistry.getBarlineBBox(),
+        path: LayoutRegistry.getBarlinePath()
       });
     }
     
@@ -437,7 +569,7 @@ function eventElementsForMeasure(
           id: `el-keysig-${event.id}-${i}`,
           sourceId: event.id,
           type: "keysig",
-          x: preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH - CONFIG.PREAMBLE_KEYSIG_WIDTH + (i * 0.8),
+          x: LayoutRegistry.getKeysigOffset(preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH - CONFIG.PREAMBLE_KEYSIG_WIDTH, i),
           y: (yOffset ?? 1.0) + staffOffsetY,
           bbox: { ...CONFIG.BBOX_KEYSIG },
           glyph: { codepoint: glyphCode }
@@ -454,41 +586,105 @@ function eventElementsForMeasure(
         5: 0xe085, 6: 0xe086, 7: 0xe087, 8: 0xe088, 9: 0xe089
       };
 
-      const rawValue = event["value" as keyof typeof event] || "4/4";
-      let num = 4;
-      let den = 4;
-
-      if (typeof rawValue === "string" && rawValue.includes("/")) {
-        const parts = rawValue.split("/");
-        num = parseInt(parts[0] || "4", 10);
-        den = parseInt(parts[1] || "4", 10);
-      } else {
-        num = (event["numerator" as keyof typeof event] as number) ?? 4;
-        den = (event["denominator" as keyof typeof event] as number) ?? 4;
-      }
+      const num = event.time.numerator;
+      const den = event.time.denominator;
 
       elements.push({
         id: `el-timesig-num-${event.id}`,
         sourceId: event.id,
         type: "timesig", 
-        x: preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH, 
+        x: LayoutRegistry.getTimesigOffset(preambleWidth), 
         y: CONFIG.Y_TIMESIG_NUMERATOR + staffOffsetY, 
         bbox: { ...CONFIG.BBOX_TIMESIG },
         glyph: { codepoint: digitGlyphs[num] ?? 0xe084 }
       });
 
-      // Fixed: Type was mistakenly set to "clef" instead of "timesig"
       elements.push({
         id: `el-timesig-den-${event.id}`,
         sourceId: event.id,
         type: "timesig",
-        x: preambleWidth - CONFIG.PREAMBLE_TIMESIG_WIDTH,
+        x: LayoutRegistry.getTimesigOffset(preambleWidth),
         y: CONFIG.Y_TIMESIG_DENOMINATOR + staffOffsetY,
         bbox: { ...CONFIG.BBOX_TIMESIG },
         glyph: { codepoint: digitGlyphs[den] ?? 0xe084 }
       });
     }
   }
+
+  // -------------------------------------------------------
+  // BEAM PASS — slope-clamped anchors, per-level segments.
+  // -------------------------------------------------------
+  const noteById = new Map(
+    events.filter((event): event is NoteEvent => event.kind === "note").map((event) => [event.id, event])
+  );
+  const beamConfig = {
+    beamThickness: CONFIG.BEAM_THICKNESS,
+    beamMaxSlope: CONFIG.BEAM_MAX_SLOPE,
+    beamLevelGap: CONFIG.BEAM_LEVEL_GAP
+  };
+
+  for (const group of measureBeamGroups) {
+    const stemTips = collectBeamStemTips(group, elements);
+    if (stemTips.length < 2) {
+      continue;
+    }
+
+    const notes = group.noteIds
+      .map((noteId) => noteById.get(noteId))
+      .filter((note): note is NoteEvent => Boolean(note));
+
+    if (notes.length !== group.noteIds.length) {
+      continue;
+    }
+
+    layoutBeamGroup(
+      group,
+      notes,
+      stemTips,
+      measure.tick,
+      elements,
+      beamConfig,
+      CONFIG.STEM_BBOX_DOWN_PADDING_TOP
+    );
+  }
+
+  // Implicit barline at the measure's right edge (not a score event).
+  // The barline center is placed at the MAX of:
+  //   1. The stretched spring grid's right edge (preamble + lastEventX * stretch)
+  //   2. The actual rendered right edge of every notehead / rest / accidental
+  // plus the configured BARLINE_RIGHT_PADDING. The barline's own width is
+  // added through its bbox/path (registry helpers), so the line sits with its
+  // RIGHT edge aligned to the measure box's right edge — never crossing into
+  // a glyph regardless of system stretch.
+  const springRightEdge = preambleWidth + contentEndX * stretchRatio;
+
+  let renderedRightEdge = preambleWidth;
+  for (const el of elements) {
+    if (
+      el.type === "notehead" ||
+      el.type === "rest" ||
+      el.type === "accidental"
+    ) {
+      const right = el.x + el.bbox.right;
+      if (right > renderedRightEdge) {
+        renderedRightEdge = right;
+      }
+    }
+  }
+
+  const barlineX = LayoutRegistry.getMeasureRightEdge(
+    Math.max(springRightEdge, renderedRightEdge)
+  );
+
+  elements.push({
+    id: `el-barline-end-${measure.id}`,
+    sourceId: measure.id,
+    type: "barline",
+    x: barlineX,
+    y: 0,
+    bbox: LayoutRegistry.getBarlineBBox(),
+    path: LayoutRegistry.getBarlinePath()
+  });
 
   return elements;
 }
@@ -626,17 +822,20 @@ export function engrave(
     for (const measure of measureModels) {
       const naturalWidth = widths.get(measure.id) ?? CONFIG.DEFAULT_MEASURE_WIDTH;
       const measureWidth = naturalWidth * systemLayout.stretchFactor;
-      
+
       const preambleWidth = computePreambleWidth(score, measure);
-      
-      // Calculate how much only the flexible space needs to stretch 
-      const springWidth = Math.max(0.1, naturalWidth - preambleWidth - CONFIG.MEASURE_WIDTH_PADDING);
-      const targetSpringWidth = Math.max(0.1, measureWidth - preambleWidth - CONFIG.MEASURE_WIDTH_PADDING);
+      const barlineReserve = CONFIG.BARLINE_RIGHT_PADDING + CONFIG.BARLINE_WIDTH;
+
+      const springWidth = Math.max(0.1, naturalWidth - preambleWidth - barlineReserve);
+      const targetSpringWidth = Math.max(0.1, measureWidth - preambleWidth - barlineReserve);
       const stretchRatio = targetSpringWidth / springWidth;
 
-      // Pass the stretch ratio down so elements calculate their true positions immediately.
-      // This prevents scaling from breaking hardcoded anchor relationships.
-      const rawElements = eventElementsForMeasure(score, measure, fonts, stretchRatio);
+      const rawElements = eventElementsForMeasure(
+        score,
+        measure,
+        fonts,
+        stretchRatio
+      );
 
       const elements = runSkylinePlacement(rawElements, staffIds);
 

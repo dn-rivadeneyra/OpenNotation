@@ -381,5 +381,26 @@ export function pitchToStaffPosition(
     toDiatonicNumber(pitch) -
     toDiatonicNumber(bottom);
 
-  return diatonicDistance;
+  return diatonicDistance * 0.5;
+}
+
+const DIATONIC_STEPS: Pitch["step"][] = ["C", "D", "E", "F", "G", "A", "B"];
+
+/**
+ * Converts a staff position to pitch for a given clef.
+ *
+ * @param staffPosition Position where 0 = bottom line, 4 = top line.
+ * @param clef Active clef.
+ * @returns Pitch at that staff position (natural spelling).
+ */
+export function staffPositionToPitch(staffPosition: number, clef: ClefType): Pitch {
+  const bottom = CLEF_BOTTOM_LINE[clef];
+  const targetDiatonic = toDiatonicNumber(bottom) + staffPosition * 2;
+  const octave = Math.floor(targetDiatonic / 7);
+  const stepIndex = ((targetDiatonic % 7) + 7) % 7;
+  const step = DIATONIC_STEPS[stepIndex];
+  if (!step) {
+    throw new Error("failed to resolve diatonic step.");
+  }
+  return { step, octave, alter: 0 };
 }

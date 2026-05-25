@@ -1,0 +1,1021 @@
+MuseScore Beaming and Grouping System
+
+This codemap traces MuseScore's beaming and grouping system, which handles automatic beam creation based on time signatures, beam positioning calculations, and special cases like grace notes, cross-staff beams, and feathered beams. Key locations include the Groups pattern table [1b], beam creation during measure layout [2b], anchor calculation [3d], and beam segment creation [4c].
+
+1- Default Beaming Pattern Setup
+
+Motivation
+When you enter notes in MuseScore, the software needs to know how to connect them with beams according to standard music notation rules. Different time signatures have different conventions: in 4/4 time, eighth notes typically beam in groups of two per beat, while in 6/8 time they beam in groups of three. Rather than forcing users to manually specify every beam break, MuseScore needs a lookup system that can retrieve the correct beaming pattern for any time signature at any position in the score.
+
+Details
+The system stores default beaming patterns in a static lookup table [1a] containing predefined GroupNode structures for common time signatures (2/4, 3/4, 4/4, 3/8, 6/8, etc.). Each entry specifies tick positions where beams should break and what type of break (primary beam, secondary beam, etc.).
+
+When the layout engine needs to determine beaming for a note at a specific tick position, it calls Staff::group(tick) [1c] which retrieves the appropriate Groups object. This method first checks if the time signature at that tick has custom groups defined by the user—if so, it uses those. Otherwise, it falls back to Groups::endings() [1b] which either returns the pattern from the static table or generates a default pattern by breaking at each beat.
+
+The GroupNode structure uses a compact bit-packed format where different bits control whether to break the primary beam, secondary beam (16ths), or tertiary beam (32nds) at each position, allowing efficient storage and lookup of complex beaming rules.
+
+How MuseScore initializes default beaming patterns for common time signatures using a static lookup table
+### 1a. Static time signature pattern table (`groups.cpp:49`)
+Predefined beaming patterns for common time signatures (2/4, 3/4, 4/4, etc.) stored as GroupNodes with tick positions and break actions
+```text
+static std::vector<NoteGroup> noteGroups {
+    { Fraction(2, 2),
+      Groups({ { 4, 0x200 }, { 8, 0x110 }, { 12, 0x200 }, { 16, 0x111 }, { 20, 0x200 }, { 24, 0x110 }, { 28, 0x200 } })
+    },
+    { Fraction(3, 2),
+      Groups({ { 4, 0x200 }, { 8, 0x110 }, { 12, 0x200 }, { 16, 0x111 }, { 20, 0x200 }, { 24, 0x110 }, { 28, 0x200 },
+                 { 32, 0x111 }, { 36, 0x200 }, { 40, 0x110 }, { 44, 0x200 } })
+    },
+    { Fraction(4, 2),
+      Groups({ { 4, 0x200 }, { 8, 0x110 }, { 12, 0x200 }, { 16, 0x111 }, { 20, 0x200 }, { 24, 0x110 }, { 28, 0x200 },
+                 { 32, 0x111 }, { 36, 0x200 }, { 40, 0x110 }, { 44, 0x200 }, { 48, 0x111 }, { 52, 0x200 }, { 56, 0x110 }, { 60, 0x200 } })
+    },
+    { Fraction(2, 4),
+      Groups({ { 4, 0x200 }, { 8, 0x111 }, { 12, 0x200 } })
+    },
+    { Fraction(3, 4),
+      Groups({ { 4, 0x200 }, { 8, 0x111 }, { 12, 0x200 }, { 16, 0x111 }, { 20, 0x200 } })
+    },
+    { Fraction(4, 4),
+      Groups({ { 4, 0x200 }, { 8, 0x110 }, { 12, 0x200 }, { 16, 0x111 }, { 20, 0x200 }, { 24, 0x110 }, { 28, 0x200 } })
+    },
+    { Fraction(5, 4),
+      Groups({ { 4, 0x200 }, { 8, 0x110 }, { 12, 0x200 }, { 16, 0x110 }, { 20, 0x200 }, { 24, 0x111 }, { 28, 0x200 },
+                 { 32, 0x110 }, { 36, 0x200 } })
+    },
+    { Fraction(6, 4),
+      Groups({ { 4, 0x200 }, { 8, 0x110 }, { 12, 0x200 }, { 16, 0x110 }, { 20, 0x200 }, { 24, 0x111 }, { 28, 0x200 },
+                 { 32, 0x110 }, { 36, 0x200 }, { 40, 0x110 }, { 44, 0x200 } })
+    },
+    { Fraction(3, 8),
+      Groups({ { 4, 0x200 }, { 8, 0x200 } })
+    },
+    { Fraction(5, 8),
+      Groups({ { 4, 0x200 }, { 8, 0x200 }, { 12, 0x111 }, { 16, 0x200 } })
+    },
+    { Fraction(6, 8),
+      Groups({ { 4, 0x200 }, { 8, 0x200 }, { 12, 0x111 }, { 16, 0x200 }, { 20, 0x200 } })
+    },
+    { Fraction(7, 8),
+      Groups({ { 4, 0x200 }, { 8, 0x200 }, { 12, 0x111 }, { 16, 0x200 }, { 20, 0x111 }, { 24, 0x200 } })
+    },
+    { Fraction(9, 8),
+      Groups({ { 4, 0x200 }, { 8, 0x200 }, { 12, 0x111 }, { 16, 0x200 }, { 20, 0x200 }, { 24, 0x111 }, { 28, 0x200 }, { 32, 0x200 } })
+    },
+    { Fraction(12, 8),
+      Groups({ { 4, 0x200 }, { 8, 0x200 }, { 12, 0x111 }, { 16, 0x200 }, { 20, 0x200 }, { 24, 0x111 }, { 28, 0x200 },
+                 { 32, 0x200 }, { 36, 0x111 }, { 40, 0x200 }, { 44, 0x200 } })
+    },
+};
+```
+### 1b. Lookup default Groups for time signature (`groups.cpp:211`)
+Returns beaming Groups from static table or generates default pattern by breaking at each beat
+```text
+const Groups& Groups::endings(const Fraction& f)
+{
+    for (const NoteGroup& g : noteGroups) {
+        if (g.timeSig.identical(f)) {
+            return g.endings;
+        }
+    }
+    NoteGroup g;
+    g.timeSig = f;
+    noteGroups.push_back(g);
+
+    int pos = 0;
+    switch (f.denominator()) {
+    case 2:     pos = 16;
+        break;
+    case 4:     pos = 8;
+        break;
+    case 8:     pos = 4;
+        break;
+    case 16:    pos = 2;
+        break;
+    case 32:    pos = 1;
+        break;
+        break;
+    }
+    for (int i = 1; i < f.numerator(); ++i) {
+        GroupNode n;
+        n.pos    = pos * i;
+        n.action = 0x111;
+        g.endings.addNode(n);
+    }
+    return noteGroups.back().endings;
+}
+```
+```
+const Groups& Groups::endings(const Fraction& f)
+{
+    for (const NoteGroup& g : noteGroups) {
+        if (g.timeSig.identical(f)) {
+            return g.endings;
+        }
+    }
+    NoteGroup g;
+    g.timeSig = f;
+    noteGroups.push_back(g);
+
+    int pos = 0;
+    switch (f.denominator()) {
+    case 2:     pos = 16;
+        break;
+    case 4:     pos = 8;
+        break;
+    case 8:     pos = 4;
+        break;
+    case 16:    pos = 2;
+        break;
+    case 32:    pos = 1;
+        break;
+        break;
+    }
+    for (int i = 1; i < f.numerator(); ++i) {
+        GroupNode n;
+        n.pos    = pos * i;
+        n.action = 0x111;
+        g.endings.addNode(n);
+    }
+    return noteGroups.back().endings;
+}
+```
+
+### 1c. Retrieve Groups for tick position (`staff.cpp:796`)
+Gets time signature at tick, returns its custom Groups or default endings from Groups::endings()
+```text
+const Groups& Staff::group(const Fraction& tick) const
+{
+    TimeSig* ts = timeSig(tick);
+    if (ts) {
+        if (!ts->groups().empty()) {
+            return ts->groups();
+        }
+        return Groups::endings(ts->sig());
+    }
+    Measure* m = score()->tick2measure(tick);
+    return Groups::endings(m ? m->timesig() : Fraction(4, 4));
+}
+```
+When you enter notes in MuseScore, eighth notes and shorter need to be beamed together according to music notation rules. Different time signatures have different beaming patterns—for example, in 4/4 time you typically beam by the beat (four eighth notes per beam), while in 6/8 time you beam in groups of three. The system must automatically determine which notes should connect, when to break beams, and handle special cases like cross-measure beaming. This code solves that problem by analyzing each measure's notes and creating Beam objects that connect the appropriate ChordRest elements based on time signature rules.
+
+Details
+Beam creation happens during measure layout, after stems have been positioned but before horizontal spacing is finalized [2a]. The main createBeams() function iterates through each track (voice) and each segment (time position) in the measure [2b]. For every chord or rest encountered, it queries the Groups system to determine the beaming behavior at that position [2c]. The Groups system returns a BeamMode (AUTO, BEGIN, END, BEGIN16, BEGIN32, MID, etc.) which indicates whether to start a new beam, continue the current one, or break the beam at a secondary level.
+
+When a new beam group should start, the system instantiates a Beam object using the factory pattern [2d] and adds consecutive ChordRest elements to it. The process handles cross-measure beams by checking if the previous measure's beam should continue into the current one. Grace notes are beamed separately using a dedicated beamGraceNotes() function that respects the same grouping rules. After beams are created, a separate layout pass calculates their precise positions (anchors, slope, direction) once horizontal spacing is known.
+
+### 2. Beam Creation During Measure Layout
+How beams are created when processing a measure's chord/rest segments
+### 2a. Create beams during measure layout (`measurelayout.cpp:1001`)
+Called after chord stem layout to establish beam connections before horizontal spacing
+```text
+BeamLayout::createBeams(ctx, measure);
+```
+### 2b. Main beam creation loop (`beamlayout.cpp:624`)
+Iterates through tracks and segments, builds Beam objects by connecting consecutive ChordRests based on Groups rules
+```text
+/* HACK: The real beam layout is computed at much later stage (you can't do the beams until you know
+     * horizontal spacing). However, horizontal spacing needs to know stems extensions to avoid collision
+     * with stems, and stems extensions depend on beams. Solution: we compute dummy beams here, *before*
+     * horizontal spacing. It is pointless for the beams themselves, but it *does* correctly extend the
+     * stems, thus allowing to compute horizontal spacing correctly. (M.S.) */
+```
+### 2c. Determine beaming decision (`beamlayout.cpp:731`)
+Queries Groups to decide whether to start, continue, or break beam at current ChordRest
+```text
+void BeamLayout::createBeams(LayoutContext& ctx, Measure* measure)
+{
+    TRACEFUNC;
+
+    for (track_idx_t track = 0; track < ctx.dom().ntracks(); ++track) {
+        const Staff* stf = ctx.dom().staff(track2staff(track));
+
+        // don’t compute beams for invisible staves and tablature without stems
+        if (!stf->show() || (stf->isTabStaff(measure->tick()) && stf->staffType(measure->tick())->stemless())) {
+            continue;
+        }
+
+        ChordRest* a1    = nullptr;          // start of (potential) beam
+        bool firstCR     = true;
+        Beam* beam       = nullptr;          // current beam
+        BeamMode bm    = BeamMode::AUTO;
+        ChordRest* prev  = nullptr;
+        bool checkBeats  = false;
+        Fraction stretch = Fraction(1, 1);
+        std::unordered_map<int, TDuration> beatSubdivision;
+
+        // if this measure is simple meter (actually X/4),
+        // then perform a prepass to determine the subdivision of each beat
+
+        beatSubdivision.clear();
+        TimeSig* ts = stf->timeSig(measure->tick());
+        checkBeats  = false;
+        stretch     = ts ? ts->stretch() : Fraction(1, 1);
+
+        const SegmentType st = SegmentType::ChordRest;
+        if (ts && ts->denominator() == 4) {
+            checkBeats = true;
+            for (Segment* s = measure->first(st); s; s = s->next(st)) {
+                ChordRest* mcr = toChordRest(s->element(track));
+                if (mcr == 0) {
+                    continue;
+                }
+                int beat = (mcr->rtick() * stretch).ticks() / Constants::DIVISION;
+                if (muse::contains(beatSubdivision, beat)) {
+                    beatSubdivision[beat] = std::min(beatSubdivision[beat], mcr->durationType());
+                } else {
+                    beatSubdivision[beat] = mcr->durationType();
+                }
+            }
+        }
+
+        for (Segment* segment = measure->first(st); segment; segment = segment->next(st)) {
+            ChordRest* cr = segment->cr(track);
+            if (!cr) {
+                continue;
+            }
+
+            if (cr->isChord()) {
+                Chord* chord = toChord(cr);
+                for (Chord* c : chord->graceNotes()) {
+                    c->setBeamlet(nullptr); // Will be defined during beam layout
+                }
+            }
+            cr->setBeamlet(nullptr); // Will be defined during beam layout
+
+            if (firstCR) {
+                firstCR = false;
+                // Handle cross-measure beams
+                BeamMode mode = cr->beamMode();
+                if (mode == BeamMode::MID || mode == BeamMode::END || mode == BeamMode::BEGIN16 || mode == BeamMode::BEGIN32) {
+                    ChordRest* prevCR = ctx.mutDom().findCR(measure->tick() - Fraction::fromTicks(1), track);
+                    if (prevCR) {
+                        Beam* prevBeam = prevCR->beam();
+                        const Measure* pm = prevCR->measure();
+                        if (!beamNoContinue(prevCR->beamMode())
+                            && !pm->lineBreak() && !pm->pageBreak() && !pm->sectionBreak()
+                            && ctx.state().prevMeasure()
+                            && !(prevCR->isChord() && prevCR->durationType().type() <= DurationType::V_QUARTER)) {
+                            beam = prevBeam;
+                            if (prevCR->isChord()) {
+                                if (Hook* hook = toChord(prevCR)->hook()) {
+                                    ctx.mutDom().doUndoRemoveElement(hook);
+                                }
+                            }
+                            //a1 = beam ? beam->elements().front() : prevCR;
+                            a1 = beam ? nullptr : prevCR;               // when beam is found, a1 is no longer required.
+                        } else if (prevBeam && prevBeam == cr->beam() && prevBeam->elements().front() == prevCR) {
+                            // remove the beam from the previous chordrest because we do not currently
+                            // support cross-system beams
+                            prevCR->removeDeleteBeam(false);
+                        }
+                    }
+                }
+            }
+
+            bool hasAllRest = cr->beam() && cr->beam()->hasAllRests();
+            bool isARestBeamStart = cr->isRest() && cr->beamMode() == BeamMode::BEGIN;
+            if (hasAllRest && !isARestBeamStart) {
+                cr->removeDeleteBeam(false);
+            }
+
+            // handle grace notes
+            // (tied chords?)
+            if (cr->isChord()) {
+                Chord* chord = toChord(cr);
+                beamGraceNotes(ctx, chord, false);         // grace before
+                beamGraceNotes(ctx, chord, true);          // grace after
+            }
+
+            if (cr->isRest() && cr->beamMode() == BeamMode::AUTO) {
+                bm = BeamMode::NONE;                   // do not beam rests set to BeamMode::AUTO or with only other rests
+            } else {
+                bm = Groups::endBeam(cr, prev);          // get defaults from time signature properties
+            }
+            // perform additional context-dependent checks
+            if (bm == BeamMode::AUTO) {
+                // check if we need to break beams according to minimum duration in current / previous beat
+                if (checkBeats && cr->rtick().isNotZero()) {
+                    Fraction tick = cr->rtick() * stretch;
+                    // check if on the beat
+                    if ((tick.ticks() % Constants::DIVISION) == 0) {
+                        int beat = tick.ticks() / Constants::DIVISION;
+                        // get minimum duration for this & previous beat
+                        TDuration minDuration = std::min(beatSubdivision[beat], beatSubdivision[beat - 1]);
+                        // re-calculate beam as if this were the duration of current chordrest
+                        TDuration saveDuration        = cr->actualDurationType();
+                        TDuration saveCMDuration      = cr->crossMeasureDurationType();
+                        CrossMeasure saveCrossMeasVal = cr->crossMeasure();
+                        cr->setDurationType(minDuration);
+                        bm = Groups::endBeam(cr, prev);
+                        cr->setDurationType(saveDuration);
+                        cr->setCrossMeasure(saveCrossMeasVal);
+                        cr->setCrossMeasureDurationType(saveCMDuration);
+                    }
+                }
+            }
+
+            prev = cr;
+
+            // if chord has hooks and is 2nd element of a cross-measure value
+            // set beam mode to NONE (do not combine with following chord beam/hook, if any)
+            TDuration durationType = cr->durationType();
+            if (durationType.hooks() > 0 && cr->crossMeasure() == CrossMeasure::SECOND) {
+                bm = BeamMode::NONE;
+            }
+
+            // Rests of any duration can be beamed over, if required
+            bool canBeBeamed = durationType.type() > DurationType::V_QUARTER || cr->isRest();
+            if (!canBeBeamed || (bm == BeamMode::NONE)) {
+                bool removeBeam = true;
+                if (beam) {
+                    layout1(beam, ctx);
+                    removeBeam = (beam->elements().size() <= 1 || beam->hasAllRests());
+                    beam = 0;
+                }
+                if (a1) {
+                    if (removeBeam) {
+                        a1->removeDeleteBeam(false);
+                    }
+                    a1 = 0;
+                }
+                cr->removeDeleteBeam(false);
+                continue;
+            }
+
+            if (beam) {
+                bool beamEnd = (bm == BeamMode::BEGIN);
+                if (!beamEnd) {
+                    cr->replaceBeam(beam);
+                    cr = 0;
+                    beamEnd = (bm == BeamMode::END);
+                }
+                if (beamEnd) {
+                    layout1(beam, ctx);
+                    beam = 0;
+                }
+            }
+            if (!cr) {
+                continue;
+            }
+
+            if (a1 == 0) {
+                a1 = cr;
+            } else {
+                if (!beamModeMid(bm)
+                    &&
+                    (bm == BeamMode::BEGIN
+                     || (a1->segment()->segmentType() != cr->segment()->segmentType())
+                     || (a1->tick() + a1->actualTicks() < cr->tick())
+                    )
+                    ) {
+                    a1->removeDeleteBeam(false);
+                    a1 = cr;
+                } else {
+                    beam = a1->beam();
+                    if (beam == 0 || beam->elements().front() != a1) {
+                        beam = Factory::createBeam(ctx.mutDom().dummyParent()->system());
+                        beam->setGenerated(true);
+                        beam->setTrack(track);
+                        a1->replaceBeam(beam);
+                    }
+                    cr->replaceBeam(beam);
+                    a1 = 0;
+                }
+            }
+        }
+        if (beam) {
+            layout1(beam, ctx);
+        } else if (a1) {
+            Fraction nextTick = a1->tick() + a1->actualTicks();
+            Measure* m = (nextTick >= measure->endTick() ? measure->nextMeasure() : measure);
+            ChordRest* nextCR = (m ? m->findChordRest(nextTick, track) : nullptr);
+            Beam* b = a1->beam();
+            if (!(b && !b->elements().empty() && !b->hasAllRests() && b->elements().front() == a1 && nextCR
+                  && beamModeMid(nextCR->beamMode()))) {
+                a1->removeDeleteBeam(false);
+            }
+        }
+    }
+}
+
+```
+### 2d. Instantiate new Beam object (`beamlayout.cpp:815`)
+Creates new Beam when starting a beam group and adds ChordRest elements to it
+When you beam notes together (like connecting four 16th notes), MuseScore must determine where to draw the beam line. This isn't just about connecting stems - the beam needs a specific vertical position, slope, and direction (up or down) that looks correct and avoids collisions with other elements. These calculations can only happen after horizontal spacing is complete, because the beam's slope depends on the distance between notes.
+
+Details
+Beam layout happens in two phases. First, layout1() [3b] determines the stem direction for all notes in the beam. This considers multiple factors: whether the beam is manually set to up/down, whether it spans multiple staves (cross-staff), whether it's on a drum staff, and the vertical positions of all notes in the group.
+
+Then layout2() [3c] calculates the beam anchors - the start and end points where the primary beam line attaches to the stems. It sets the beam width and spacing based on style settings. The heavy lifting is done by calculateAnchors() [3d], which computes precise Y positions by analyzing stem lengths and adjusting for collision avoidance. This function ensures the beam clears note heads, ledger lines, and other obstacles while respecting slope limits (beams that are too steep look incorrect).
+
+Finally, the system computes the beam's slope from the anchor points and creates the individual beam segments at different levels (primary, secondary, etc.) that visually connect the notes.
+
+### 3. Beam Positioning and Layout
+How beam positions (anchors, slope, direction) are calculated after horizontal spacing
+### 3a. Main beam layout entry point (`beamlayout.cpp:59`)
+Sorts elements by tick, handles system breaks, calls layout2 for each beam fragment
+```text
+void BeamLayout::layout(Beam* item, const LayoutContext& ctx)
+{
+    TRACEFUNC;
+
+    Beam::LayoutData* ldata = item->mutldata();
+    // all of the beam layout code depends on _elements being in order by tick
+    // this may not be the case if two cr's were recently swapped.
+    std::sort(item->elements().begin(), item->elements().end(),
+              [](const ChordRest* a, const ChordRest* b) -> bool {
+        return a->tick() < b->tick();
+    });
+    System* system = item->elements().front()->measure()->system();
+    item->setParent(system);
+
+    std::vector<ChordRest*> crl;
+
+    size_t n = 0;
+    for (ChordRest* cr : item->elements()) {
+        auto newSystem = cr->measure()->system();
+        if (newSystem && newSystem != system) {
+            SpannerSegmentType st;
+            if (n == 0) {
+                st = SpannerSegmentType::BEGIN;
+            } else {
+                st = SpannerSegmentType::MIDDLE;
+            }
+            ++n;
+            if (item->beamFragments().size() < n) {
+                item->beamFragments().push_back(new BeamFragment);
+            }
+            layout2(item, ctx, crl, st, static_cast<int>(n) - 1);
+            crl.clear();
+            system = cr->measure()->system();
+        }
+        crl.push_back(cr);
+    }
+
+    Shape beamShape(Shape::Type::Composite);
+
+    if (!crl.empty()) {
+        SpannerSegmentType st;
+        if (n == 0) {
+            st = SpannerSegmentType::SINGLE;
+        } else {
+            st = SpannerSegmentType::END;
+        }
+        if (item->beamFragments().size() < (n + 1)) {
+            item->beamFragments().push_back(new BeamFragment);
+        }
+        layout2(item, ctx, crl, st, static_cast<int>(n));
+
+        for (const BeamSegment* bs : item->beamSegments()) {
+            beamShape.add(bs->shape());
+        }
+    }
+
+    ldata->setShape(beamShape);
+
+    // The beam may have changed shape. one-note trems within this beam need to be layed out here
+    for (ChordRest* cr : item->elements()) {
+        ChordLayout::computeUp(cr, ctx);
+        if (cr->isChord() && toChord(cr)->tremoloSingleChord()) {
+            TremoloLayout::layout(toChord(cr)->tremoloSingleChord(), ctx);
+        }
+    }
+}
+```
+### 3b. Determine stem direction (`beamlayout.cpp:138`)
+Calculates beam direction based on note positions, voice context, cross-staff moves, and drum staff rules
+```text
+void BeamLayout::layout1(Beam* item, LayoutContext& ctx)
+```
+### 3c. Calculate beam anchors (`beamlayout.cpp:304`)
+Computes start and end anchor points for beam, sets beam spacing/width, calls createBeamSegments
+```text
+void BeamLayout::layout2(Beam* item, const LayoutContext& ctx, const std::vector<ChordRest*>& chordRests, SpannerSegmentType, int frag)
+{
+    TRACEFUNC;
+
+    BeamTremoloLayout::setupLData(item, item->mutldata(), ctx);
+    Chord* startChord = nullptr;
+    Chord* endChord = nullptr;
+    if (chordRests.empty()) {
+        return;
+    }
+    for (ChordRest* chordRest : chordRests) {
+        if (chordRest->isChord()) {
+            if (!startChord) {
+                startChord = toChord(chordRest);
+                endChord = startChord;
+            } else {
+                endChord = toChord(chordRest);
+            }
+            ChordLayout::layoutStem(toChord(chordRest), ctx);
+        }
+    }
+    if (!startChord) {
+        // we were passed a vector of only rests. we don't support beams across only rests
+        // this beam will be deleted in LayoutBeams
+        return;
+    }
+
+    item->setBeamSpacing(ctx.conf().styleB(Sid::useWideBeams) ? 4 : 3);
+    item->setBeamDist((item->beamSpacing() / 4.0) * item->spatium() * item->mag());
+    item->setBeamWidth(item->absoluteFromSpatium(ctx.conf().styleS(Sid::beamWidth)) * item->mag());
+
+    item->setStartAnchor(BeamTremoloLayout::chordBeamAnchor(item->ldata(), startChord, ChordBeamAnchorType::Start));
+    item->setEndAnchor(BeamTremoloLayout::chordBeamAnchor(item->ldata(), endChord, ChordBeamAnchorType::End));
+
+    if (item->isGrace()) {
+        item->setBeamDist(item->beamDist() * ctx.conf().styleD(Sid::graceNoteMag));
+        item->setBeamWidth(item->beamWidth() * ctx.conf().styleD(Sid::graceNoteMag));
+    }
+
+    int fragmentIndex = item->directionIdx();
+    if (item->userModified()) {
+        BeamTremoloLayout::setupLData(item, item->mutldata(), ctx);
+        double startY = item->beamFragments()[frag]->py1[fragmentIndex];
+        double endY = item->beamFragments()[frag]->py2[fragmentIndex];
+        if (ctx.conf().styleB(Sid::snapCustomBeamsToGrid)) {
+            const double quarterSpace = item->spatium() / 4;
+            startY = round(startY / quarterSpace) * quarterSpace;
+            endY = round(endY / quarterSpace) * quarterSpace;
+        }
+        startY += item->pagePos().y();
+        endY += item->pagePos().y();
+        item->startAnchor().setY(startY);
+        item->endAnchor().setY(endY);
+        item->mutldata()->setAnchors(item->startAnchor(), item->endAnchor());
+        item->computeAndSetSlope();
+        createBeamSegments(item, ctx, chordRests);
+        BeamLayout::setTremAnchors(item, ctx);
+        return;
+    }
+
+    // anchor represents the middle of the beam, not the tip of the stem
+    // location depends on _isBesideTabStaff
+
+    if (!item->isBesideTabStaff()) {
+        BeamTremoloLayout::setupLData(item, item->mutldata(), ctx);
+        BeamTremoloLayout::calculateAnchors(item, item->mutldata(), ctx, chordRests, item->notePositions());
+        item->setStartAnchor(item->ldata()->startAnchor);
+        item->setEndAnchor(item->ldata()->endAnchor);
+        item->computeAndSetSlope();
+        item->setBeamDist(item->ldata()->beamDist);
+    } else {
+        item->setSlope(0.0);
+        Chord* startChord2 = nullptr;
+        for (ChordRest* cr : chordRests) {
+            if (cr->isChord()) {
+                startChord2 = toChord(cr);
+                break;
+            }
+        }
+        BeamTremoloLayout::setupLData(item, item->mutldata(), ctx);
+        double x1 = BeamTremoloLayout::chordBeamAnchorX(item->ldata(), chordRests.front(), ChordBeamAnchorType::Start);
+        double x2 = BeamTremoloLayout::chordBeamAnchorX(item->ldata(), chordRests.back(), ChordBeamAnchorType::End);
+        double y = BeamTremoloLayout::chordBeamAnchorY(item->ldata(), startChord2);
+        item->startAnchor() = PointF(x1, y);
+        item->endAnchor() = PointF(x2, y);
+        item->mutldata()->setAnchors(item->startAnchor(), item->endAnchor());
+    }
+
+    item->beamFragments()[frag]->py1[fragmentIndex] = item->startAnchor().y() - item->pagePos().y();
+    item->beamFragments()[frag]->py2[fragmentIndex] = item->endAnchor().y() - item->pagePos().y();
+
+    createBeamSegments(item, ctx, chordRests);
+    setTremAnchors(item, ctx);
+}
+
+bool BeamLayout::isStartOfNonCrossBeam(ChordRest* cr)
+{
+    Beam* b = cr->beam();
+    if (b && b->elements().front() == cr) {
+        if (b->cross()) {
+            return false;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+bool BeamLayout::isStartOfCrossBeam(ChordRest* cr)
+{
+    Beam* b = cr->beam();
+    if (b && b->elements().front() == cr) {
+        if (b->cross()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+```
+### 3d. Compute anchor positions (`beamlayout.cpp:369`)
+Calculates precise start/end Y positions based on stem lengths, collision avoidance, and slope limits
+```text
+void BeamLayout::layout1(Beam* item, LayoutContext& ctx)
+{
+    Beam::LayoutData* ldata = item->mutldata();
+    item->resetExplicitParent();  // parent is System
+
+    const StaffType* staffType = item->staffType();
+    item->setTab((staffType && staffType->isTabStaff()) ? staffType : nullptr);
+    item->setIsBesideTabStaff(item->tab() && !item->tab()->stemless() && !item->tab()->stemThrough());
+
+    // TAB's with stem beside staves have special layout
+    if (item->isBesideTabStaff()) {
+        item->setUp(!item->tab()->stemsDown());
+        item->setSlope(0.0);
+        item->setCross(false);
+        item->setMinMove(0);
+        item->setMaxMove(0);
+        for (ChordRest* cr : item->elements()) {
+            if (cr->isChord()) {
+                item->setUp(cr->up());
+                break;
+            }
+        }
+        return;
+    }
+
+    if (item->staff()->isDrumStaff(item->tick())) {
+        if (item->direction() != DirectionV::AUTO) {
+            item->setUp(item->direction() == DirectionV::UP);
+        } else if (item->isGrace()) {
+            item->setUp(true);
+        } else {
+            // search through the beam for the first chord with explicit stem direction and use that.
+            // if there is no explicit stem direction, default to the direction of the first stem.
+            bool firstUp = false;
+            bool firstChord = true;
+            for (ChordRest* cr : item->elements()) {
+                if (!cr->isChord()) {
+                    item->setUp(firstUp);
+                    continue;
+                }
+                Chord* chord = toChord(cr);
+                DirectionV crDirection = toChord(cr)->stemDirection();
+                if (crDirection != DirectionV::AUTO) {
+                    item->setUp(crDirection == DirectionV::UP);
+                    break;
+                }
+                if (firstChord) {
+                    const Staff* staff = item->staff();
+                    const Part* part = staff ? staff->part() : nullptr;
+                    const Drumset* ds = part ? part->instrument(item->tick())->drumset() : nullptr;
+                    firstUp = ds ? ds->stemDirection(chord->upNote()->pitch()) == DirectionV::UP : chord->up();
+                    firstChord = false;
+                }
+                item->setUp(firstUp);
+            }
+        }
+        for (ChordRest* cr : item->elements()) {
+            ChordLayout::computeUp(cr, ctx);
+            if (cr->isChord()) {
+                ChordLayout::layoutStem(toChord(cr), ctx);
+            }
+        }
+        return;
+    }
+
+    item->setMinMove(std::numeric_limits<int>::max());
+    item->setMaxMove(std::numeric_limits<int>::min());
+    double mag = 0.0;
+
+    item->notePositions().clear();
+    staff_idx_t staffIdx = muse::nidx;
+    for (ChordRest* cr : item->elements()) {
+        double m = cr->isSmall() ? ctx.conf().styleD(Sid::smallNoteMag) : 1.0;
+        mag = std::max(mag, m);
+        if (cr->isChord()) {
+            Chord* chord = toChord(cr);
+            staffIdx = chord->vStaffIdx();
+            int i = chord->staffMove();
+            item->setMinMove(std::min(item->minCRMove(), i));
+            item->setMaxMove(std::max(item->maxCRMove(), i));
+
+            for (int distance : chord->noteDistances()) {
+                item->notePositions().push_back(BeamBase::NotePosition(distance, cr->vStaffIdx()));
+            }
+        }
+    }
+
+    std::sort(item->notePositions().begin(), item->notePositions().end());
+    ldata->setMag(mag);
+
+    item->setCross(item->minCRMove() != item->maxCRMove());
+
+    //
+    // determine beam stem direction
+    //
+    if (item->elements().empty()) {
+        return;
+    }
+    ChordRest* firstNote = item->elements().front();
+    Measure* measure = firstNote->measure();
+    bool hasMultipleVoices = measure->hasVoices(firstNote->staffIdx(), item->tick(), item->ticks());
+    if (computeUpForMovedCross(item)) {
+    } else if (item->direction() != DirectionV::AUTO) {
+        item->setUp(item->direction() == DirectionV::UP);
+    } else if (item->maxCRMove() > 0) {
+        item->setUp(false);
+    } else if (item->minCRMove() < 0) {
+        item->setUp(true);
+    } else if (item->isGrace()) {
+        if (hasMultipleVoices) {
+            item->setUp(firstNote->track() % 2 == 0);
+        } else {
+            item->setUp(true);
+        }
+    } else if (item->notePositions().size()) {
+        if (hasMultipleVoices) {
+            item->setUp(firstNote->track() % 2 == 0);
+        } else {
+            if (const Chord* chord = item->findChordWithCustomStemDirection()) {
+                item->setUp(chord->stemDirection() == DirectionV::UP);
+            } else {
+                std::set<BeamBase::NotePosition> notePosSet(item->notePositions().begin(), item->notePositions().end());
+                std::vector<int> noteLines;
+                noteLines.reserve(notePosSet.size());
+                for (BeamBase::NotePosition pos : notePosSet) {
+                    noteLines.push_back(pos.line);
+                }
+                item->setUp(ChordLayout::computeAutoStemDirection(noteLines) > 0);
+            }
+        }
+    } else {
+        item->setUp(true);
+    }
+
+    int middleStaffLine = firstNote->staffType()->middleLine();
+    for (size_t i = 0; i < item->notePositions().size(); i++) {
+        item->notePositions()[i].line += middleStaffLine;
+    }
+
+    bool isEntirelyMoved = false;
+    if (item->minCRMove() == item->maxCRMove() && item->minCRMove() != 0) {
+        isEntirelyMoved = true;
+        item->setStaffIdx(staffIdx);
+        if (item->direction() == DirectionV::AUTO) {
+            item->setUp(item->maxCRMove() > 0);
+        }
+    } else if (item->elements().size()) {
+        item->setStaffIdx(item->elements().at(0)->staffIdx());
+    }
+    item->setFullCross(isEntirelyMoved);
+
+    item->setSlope(0.0);
+
+    for (ChordRest* cr : item->elements()) {
+        bool prevUp = cr->up();
+        ChordLayout::computeUp(cr, ctx);
+        if (cr->isChord() && cr->up() != prevUp) {
+            ChordLayout::layoutChords1(ctx, cr->segment(), cr->staffIdx());
+            cr->segment()->createShape(cr->staffIdx());
+            if (toChord(cr)->isGrace()) {
+                ChordLayout::layoutStem(toChord(cr), ctx);
+            }
+        }
+    }
+}
+```
+When displaying beamed notes in sheet music, MuseScore must draw the actual horizontal beam lines that connect note stems. These visual elements are more complex than they appear: a single group of sixteenth notes requires multiple parallel beam lines at different "levels" (the primary beam connecting all notes, plus secondary beams for subdivisions). These beams must break at musically correct positions based on time signature rules, and isolated notes may need partial "beamlets" extending only from their stem. The beam segment creation system solves this by translating abstract beaming decisions into precise geometric beam lines.
+
+Details
+The process begins in createBeamSegments() [4a], which iterates through each beam level (0 for primary, 1 for secondary, etc.). For each level, it loops through all ChordRest elements in the beam [4b] and determines whether the beam should continue or break at each position using calcBeamBreaks() [4b]. This function checks the BeamMode (BEGIN16, BEGIN32, etc.) and time signature Groups to decide if inner beams should break while the primary beam continues.
+
+When a beam spans multiple notes without breaking, the system creates a full BeamSegment via createBeamSegment() [4c]. This calculates the start and end coordinates, adjusts stem lengths to reach the beam, and handles special cases like French-style beaming where beams break at every note. For isolated notes where beams break, the system creates "beamlets" — short partial segments extending from a single stem — using createBeamletSegment() [4d]. The direction of beamlets (pointing forward or backward) is determined by calcIsBeamletBefore(), which considers tuplet boundaries, neighboring note beam levels, and beat subdivisions.
+
+### 4. Beam Segment Creation
+How individual beam lines (primary, secondary, beamlets) are created at different levels
+### 4a. Create all beam segments (`beamlayout.cpp:982`)
+Iterates through beam levels (0=primary, 1=secondary, etc.), determines break points using calcBeamBreaks
+```text
+void BeamLayout::createBeamSegments(Beam* item, const LayoutContext& ctx, const std::vector<ChordRest*>& chordRests)
+{
+    item->clearBeamSegments();
+
+    bool levelHasBeam = false;
+    int level = 0;
+    constexpr size_t noLastChord = std::numeric_limits<size_t>::max();
+    size_t numCr = chordRests.size();
+    bool frenchStyleBeams = ctx.conf().styleB(Sid::frenchStyleBeams);
+    do {
+        levelHasBeam = false;
+        ChordRest* startCr = nullptr;
+        ChordRest* endCr = nullptr;
+        bool breakBeam = false;
+        bool previousBreak16 = false;
+        bool previousBreak32 = false;
+        size_t lastChordIndex = noLastChord;
+
+        for (size_t i = 0; i < numCr; i++) {
+            ChordRest* chordRest = chordRests[i];
+            ChordRest* prevChordRest = i < 1 ? nullptr : chordRests[i - 1];
+
+            if (level < chordRest->beams() && !chordRest->isRest()) {
+                levelHasBeam = true;
+            }
+            bool isBroken16 = false;
+            bool isBroken32 = false;
+
+            // updates isBroken16 and isBroken32
+            item->calcBeamBreaks(chordRest, prevChordRest, level, isBroken16, isBroken32);
+            breakBeam = isBroken16 || isBroken32;
+            bool skipRest = false;
+            BeamMode beamMode = chordRest->beamMode();
+            if (chordRest->isRest() && level >= chordRest->beams()
+                && (beamMode == BeamMode::MID || beamMode == BeamMode::BEGIN16 || beamMode == BeamMode::BEGIN32)) {
+                // if the level is lower than both the previous and next real chords, don't break here
+                size_t nextChordIndex = i + 1;
+                while (nextChordIndex < numCr && chordRests[nextChordIndex]->isRest()) {
+                    ++nextChordIndex;
+                }
+                if (lastChordIndex < numCr && nextChordIndex < numCr) {
+                    Chord* lastChord = toChord(chordRests[lastChordIndex]);
+                    Chord* nextChord = toChord(chordRests[nextChordIndex]);
+                    // we have both chords (not rests) on either side of this rest, so if the level is lower than both we can
+                    // just continue the beam through here
+                    // this creates situations where we can have the second beam of a pair of 16th notes continuing through
+                    // an 8th rest, for example, even though an 8th note would very obviously break the beam
+                    // this is desired for BeamType::MID on rests.
+                    if (level < lastChord->beams() && level < nextChord->beams()) {
+                        skipRest = (isBroken16 && level < 1) || (isBroken32 && level < 2) || (!isBroken16 && !isBroken32);
+                    }
+                }
+            }
+            if ((level < chordRest->beams() && !breakBeam) || skipRest) {
+                endCr = chordRest;
+                if (!startCr || (startCr->isRest() && startCr != item->elements().front())) {
+                    startCr = chordRest;
+                }
+            } else if (level >= chordRest->beams() && chordRest->isRest() && !breakBeam) {
+                // This rest has duration longer than the beam value, but it may still go
+                // under the beam if the next chords or rests are beamed
+                continue;
+            } else {
+                size_t beamletIndex = static_cast<size_t>(i) - 1;
+                if (lastChordIndex < item->elements().size() && (chordRest->isRest() || (endCr && endCr->isRest()))) {
+                    // we broke the beam on this chordrest, but the last cr of the beam segment can't end on a rest
+                    // so it ends on lastChord
+                    ChordRest* lastCr = toChordRest(item->elements()[lastChordIndex]);
+                    if (lastCr && startCr && lastCr->tick() >= startCr->tick()) {
+                        endCr = lastCr;
+                        beamletIndex = lastChordIndex;
+                        lastChordIndex = noLastChord;
+                    }
+                }
+                if (startCr && endCr && levelHasBeam) {
+                    if (startCr == endCr && startCr->isChord()) {
+                        bool isBeamletBefore = calcIsBeamletBefore(item,
+                                                                   toChord(startCr),
+                                                                   static_cast<int>(beamletIndex),
+                                                                   level,
+                                                                   previousBreak16,
+                                                                   previousBreak32);
+                        createBeamletSegment(item, ctx, toChord(startCr), isBeamletBefore, level);
+                    } else if (startCr != endCr) {
+                        createBeamSegment(item, startCr, endCr, level, frenchStyleBeams);
+                    }
+                }
+                bool setCr = chordRest && chordRest->isChord() && breakBeam && level < chordRest->beams();
+                startCr = setCr ? chordRest : nullptr;
+                endCr = setCr ? chordRest : nullptr;
+            }
+            previousBreak16 = isBroken16;
+            previousBreak32 = isBroken32;
+            if (chordRest && chordRest->isChord()) {
+                lastChordIndex = i;
+            }
+        }
+
+        // if the beam ends on the last chord
+        if (startCr && (endCr || breakBeam)) {
+            if ((startCr == endCr || !endCr) && startCr->isChord()) {
+                // this chord is either the last chord, or the first (followed by a rest)
+                bool isBefore = !(startCr == chordRests.front());
+                createBeamletSegment(item, ctx, toChord(startCr), isBefore, level);
+            } else {
+                createBeamSegment(item, startCr, endCr, level, frenchStyleBeams);
+            }
+        }
+        level++;
+    } while (levelHasBeam);
+}
+```
+### 4b. Calculate beam break points (`beamlayout.cpp:1011`)
+Determines if beam should break at current level based on BeamMode (BEGIN16, BEGIN32) and Groups rules
+```text
+item->calcBeamBreaks(chordRest, prevChordRest, level, isBroken16, isBroken32);
+```
+### 4c. Create full beam segment (`beamlayout.cpp:1066`)
+Creates BeamSegment spanning multiple ChordRests at given level, handles stem length adjustments
+```text
+createBeamSegment(item, startCr, endCr, level, frenchStyleBeams);
+```
+### 4d. Create beamlet for isolated note (`beamlayout.cpp:1064`)
+Creates short beam segment for single note when beam breaks, determines direction via calcIsBeamletBefore
+```text
+createBeamletSegment(item, ctx, toChord(startCr), isBeamletBefore, level);
+```
+Standard beaming rules work for most musical situations, but MuseScore must handle special cases that break the normal patterns. Grace notes need their own independent beaming logic since they're smaller and attached to main notes. Beams can span across multiple staves in complex arrangements like piano scores. Composers use feathered beams to show accelerando or decelerando effects where beam width changes gradually. And sometimes you want to break only the inner secondary beams (like the second beam of a 16th note group) while keeping the primary beam connected—a common notation practice.
+
+Details
+Grace note beaming happens separately from main note beaming. The beamGraceNotes function [5b] processes grace notes before or after a main chord as their own independent sequences, applying the same Groups-based beaming rules but at a smaller scale.
+
+Cross-staff beams are detected during the initial layout pass by comparing the staffMove values of all ChordRest elements in a beam [5d]. If the minimum and maximum staff moves differ, the beam is marked as crossing staves, which affects stem direction calculations later.
+
+Partial beam breaks are handled by calcBeamBreaks [5a]. This function checks the BeamMode (BEGIN16, BEGIN32) to determine if inner beams should break at a specific note while the primary beam continues—a feature essential for proper rhythmic grouping in complex subdivisions.
+
+Feathered beams use growth factors stored in the Beam object [5c]. The growLeft and growRight properties (defaulting to 1.0) scale the beam width along its length, creating the visual effect of gradual thickening or thinning to indicate tempo changes.
+
+### 5. Special Beam Handling
+How special cases like grace notes, cross-staff beams, and feathered beams are handled
+### 5a. Handle BEGIN16/BEGIN32 modes (`beam.cpp:252`)
+Special logic for breaking inner beams while keeping primary beam, handles rests with MID mode
+```text
+void BeamLayout::beamGraceNotes(LayoutContext& ctx, Chord* mainNote, bool after)
+{
+    ChordRest* a1    = 0;        // start of (potential) beam
+    Beam* beam       = 0;        // current beam
+    BeamMode bm = BeamMode::AUTO;
+    std::vector<Chord*> graceNotes = after ? mainNote->graceNotesAfter() : mainNote->graceNotesBefore();
+
+    if (beam) {
+        beam->setIsGrace(true);
+    }
+
+    for (ChordRest* cr : graceNotes) {
+        bm = Groups::endBeam(cr);
+        if ((cr->durationType().type() <= DurationType::V_QUARTER) || (bm == BeamMode::NONE)) {
+            if (beam) {
+                beam->setIsGrace(true);
+                layout1(beam, ctx);
+                beam = 0;
+            }
+            if (a1) {
+                a1->removeDeleteBeam(false);
+                a1 = 0;
+            }
+            cr->removeDeleteBeam(false);
+            continue;
+        }
+        if (beam) {
+            bool beamEnd = bm == BeamMode::BEGIN;
+            if (!beamEnd) {
+                cr->replaceBeam(beam);
+                cr = 0;
+                beamEnd = (bm == BeamMode::END);
+            }
+            if (beamEnd) {
+                beam->setIsGrace(true);
+                layout1(beam, ctx);
+                beam = 0;
+            }
+        }
+        if (!cr) {
+            continue;
+        }
+        if (a1 == 0) {
+            a1 = cr;
+        } else {
+            if (!beamModeMid(bm) && (bm == BeamMode::BEGIN)) {
+                a1->removeDeleteBeam(false);
+                a1 = cr;
+            } else {
+                beam = a1->beam();
+                if (beam == 0 || beam->elements().front() != a1) {
+                    beam = Factory::createBeam(ctx.mutDom().dummyParent()->system());
+                    beam->setGenerated(true);
+                    beam->setTrack(mainNote->track());
+                    a1->replaceBeam(beam);
+                }
+                cr->replaceBeam(beam);
+                a1 = 0;
+            }
+        }
+    }
+    if (beam) {
+        beam->setIsGrace(true);
+        layout1(beam, ctx);
+    } else if (a1) {
+        a1->removeDeleteBeam(false);
+    }
+}```
+### 5b. Beam grace note sequences (`beamlayout.cpp:555`)
+Separate beaming logic for grace notes before/after main notes, respects Groups rules
+```text
+void BeamLayout::beamGraceNotes(LayoutContext& ctx, Chord* mainNote, bool after)
+```
+### 5c. Feathered beam properties (`beam.h:202`)
+Stores growth factors for feathered beams (accelerando/decelerando), applied during segment creation
+```text
+double m_growLeft = 1.0; double m_growRight = 1.0;
+```
+### 5d. Detect cross-staff beams (`beamlayout.cpp:228`)
+Identifies beams spanning multiple staves by comparing staff move values of ChordRest elements
+```text
+item->setCross(item->minCRMove() != item->maxCRMove());
+```

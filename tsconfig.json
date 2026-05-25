@@ -8,6 +8,7 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "ignoreDeprecations": "6.0",
+    "allowImportingTsExtensions": true,
     "rootDir": ".",
     "outDir": "dist",
     "baseUrl": ".",

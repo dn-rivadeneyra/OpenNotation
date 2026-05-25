@@ -7,6 +7,7 @@ export type BoundingBox = {
 
 export type SmuflGlyph = {
   codepoint: number;
+  name?: string;
   scale?: number;
 };
 

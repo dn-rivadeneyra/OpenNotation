@@ -25,7 +25,19 @@ const params: LayoutParameters = {
 
 const fonts: FontMetrics = {
   glyphs: {},
-  engravingDefaults: {}
+  engravingDefaults: {},
+  metadata: {
+    glyphsWithAnchors: {
+      noteheadBlack: {
+        stemUpSE: [1.3, 0.16],
+        stemDownNW: [0, -0.168]
+      },
+      noteheadHalf: {
+        stemUpSE: [1.3, 0.16],
+        stemDownNW: [0, -0.168]
+      }
+    }
+  }
 };
 
 describe("engrave", () => {
@@ -75,8 +87,8 @@ describe("engrave", () => {
     // Verify the values match pitchToStaffPosition directly.
     const cPos = pitchToStaffPosition({ step: "C", octave: 4, alter: 0 }, "treble");
     const gPos = pitchToStaffPosition({ step: "G", octave: 5, alter: 0 }, "treble");
-    const expectedCY = (4 - cPos) * 0.5;
-    const expectedGY = (4 - gPos) * 0.5;
+    const expectedCY = 4 - cPos;
+    const expectedGY = 4 - gPos;
     expect(middleCEl!.y).toBeCloseTo(expectedCY, 5);
     expect(topGEl!.y).toBeCloseTo(expectedGY, 5);
   });
@@ -132,6 +144,43 @@ describe("engrave", () => {
     // The actual gap should be larger than the eighth's proportional width
     // (i.e., half note gets more than a quarter-note's worth of space)
     expect(actualGap).toBeGreaterThan(linearGap);
+  });
+
+  it("places implicit barline at each measure's justified right edge", () => {
+    const score = createMinimalScore();
+    const staffId = score.staves[0]!.id;
+    const ticks = computeTicks("quarter", 0);
+
+    const note = createNoteEvent({
+      staffId,
+      voiceId: 1,
+      tick: 0,
+      pitch: { step: "C", octave: 4, alter: 0 },
+      duration: { type: "quarter", dots: 0, ticks: ticks }
+    });
+    score.events.set(note.id, note);
+    score.eventIndex.set(`${staffId}:1`, [...(score.eventIndex.get(`${staffId}:1`) ?? []), note.id]);
+
+    const result = engrave(score, params, fonts);
+    const measures = result.pages[0]!.systems[0]!.measures;
+
+    expect(measures.length).toBeGreaterThan(1);
+    for (const measure of measures) {
+      const barline = measure.elements.find((el) => el.id.startsWith("el-barline-end-"));
+      expect(barline).toBeDefined();
+      // The barline's right edge (x + bbox.right) should sit at the measure's
+      // right boundary, so adjacent measures share a single visual line.
+      const barlineRightEdge = barline!.x + barline!.bbox.right;
+      expect(barlineRightEdge).toBeCloseTo(measure.width, 4);
+
+      const noteheads = measure.elements.filter((el) => el.type === "notehead");
+      if (noteheads.length > 0 && barline) {
+        const lastNote = noteheads.reduce((rightmost, el) => (el.x > rightmost.x ? el : rightmost));
+        const lastNoteRight = lastNote.x + lastNote.bbox.right;
+        // Barline's left edge must be past the last notehead's right edge.
+        expect(lastNoteRight).toBeLessThanOrEqual(barline.x + barline.bbox.left);
+      }
+    }
   });
 
   it("per-staff skylines: two staves each get independent skylines", () => {

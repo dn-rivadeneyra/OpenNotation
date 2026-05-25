@@ -9,6 +9,15 @@ export type GlyphMetrics = {
   noteheadOrigin?: { x: number; y: number };
 };
 
+export type GlyphAnchors = {
+  stemUpSE?: [number, number];
+  stemDownNW?: [number, number];
+  cutOutNE?: [number, number];
+  cutOutNW?: [number, number];
+  cutOutSE?: [number, number];
+  cutOutSW?: [number, number];
+};
+
 export type EngravingDefaults = {
   staffLineThickness: number;
   stemThickness: number;
@@ -28,6 +37,9 @@ export type EngravingDefaults = {
 export type FontMetrics = {
   glyphs: Record<string, GlyphMetrics>;
   engravingDefaults: EngravingDefaults;
+  metadata?: {
+    glyphsWithAnchors: Record<string, GlyphAnchors>;
+  };
 };
 
 export type FontLoader = {
@@ -46,8 +58,9 @@ class LelandFontLoader implements FontLoader {
    * @returns Parsed font metrics.
    */
   async load(fontPath: string): Promise<FontMetrics> {
-    this.metrics = await loadLeland(fontPath);
-    return this.metrics;
+    const metrics = await loadLeland(fontPath);
+    this.metrics = metrics;
+    return metrics;
   }
 
   /**
